@@ -22,12 +22,12 @@ class VMCreate(BaseModel):
         return v
 
 class VMAction(BaseModel):
-    action: str = Field(..., description="Power cycle command: start, stop, restart, force-stop")
+    action: str = Field(..., description="Power cycle command: start, stop, restart, force-stop, rebuild")
 
     @field_validator("action")
     @classmethod
     def validate_action(cls, v: str) -> str:
-        valid_actions = {"start", "stop", "restart", "force-stop"}
+        valid_actions = {"start", "stop", "restart", "force-stop", "rebuild"}
         if v.lower() not in valid_actions:
             raise ValueError(f"Action must be one of {valid_actions}")
         return v.lower()

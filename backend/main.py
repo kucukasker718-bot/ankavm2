@@ -152,6 +152,14 @@ def create_vm_snapshot(name: str, payload: SnapshotCreate, api_key: str = Depend
 class SnapshotRevert(BaseModel):
     snapshot_name: str
 
+@app.get("/api/vms/{name}/snapshots")
+def get_vm_snapshots(name: str, api_key: str = Depends(verify_api_key)):
+    """Lists snapshots for a specific VM."""
+    try:
+        return vm_manager.list_snapshots(name)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.post("/api/vms/{name}/snapshots/revert")
 def revert_vm_snapshot(name: str, payload: SnapshotRevert, api_key: str = Depends(verify_api_key)):
     """Reverts a VDS to a target snapshot point."""
@@ -188,8 +196,37 @@ def get_vm_network_traffic(name: str, api_key: str = Depends(verify_api_key)):
 
 # --- 7. WiseCP Deployment Worker System ---
 
+# In-memory WiseCP Order Database for Live UI Tracking
+from datetime import datetime
+WISECP_ORDERS = [
+    {
+        "order_id": "ws-order-4812",
+        "product_id": "vds-pro-saas",
+        "name": "web-prod-01",
+        "cpu": 4,
+        "ram_mb": 8192,
+        "disk_gb": 120,
+        "status": "COMPLETED",
+        "ip_address": "192.168.122.10",
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    },
+    {
+        "order_id": "ws-order-9921",
+        "product_id": "vds-starter",
+        "name": "db-replica-02",
+        "cpu": 8,
+        "ram_mb": 16384,
+        "disk_gb": 350,
+        "status": "COMPLETED",
+        "ip_address": "192.168.122.25",
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+]
+
 async def deploy_wisecp_order_task(order: WiseCPDeploy):
     """Executes asynchronous background deployment and alerts WiseCP hook callback."""
+    # Find order in track list
+    order_record = next((o for o in WISECP_ORDERS if o["order_id"] == order.order_id), None)
     try:
         await asyncio.sleep(2)  # Short delay to allow REST call completion
         
@@ -207,6 +244,11 @@ async def deploy_wisecp_order_task(order: WiseCPDeploy):
         # Run provisioning
         print(f"[WiseCP Worker] Provisioning virtual machine: {order.name}")
         vm_res = vm_manager.create_vm(vm_payload)
+        
+        # Update record
+        if order_record:
+            order_record["status"] = "COMPLETED"
+            order_record["ip_address"] = vm_res.ip_address
         
         # Send Callback
         if order.callback_url:
@@ -234,6 +276,10 @@ async def deploy_wisecp_order_task(order: WiseCPDeploy):
                 
     except Exception as e:
         print(f"[WiseCP Worker] Deployment failed for order {order.order_id}: {e}")
+        if order_record:
+            order_record["status"] = "FAILED"
+            order_record["error"] = str(e)
+            
         if order.callback_url:
             try:
                 cb_data = json.dumps({
@@ -255,11 +301,28 @@ async def deploy_wisecp_order_task(order: WiseCPDeploy):
 @app.post("/api/wisecp/deploy", status_code=202)
 def deploy_wisecp_order(order: WiseCPDeploy, api_key: str = Depends(verify_api_key)):
     """Receives server orders from WiseCP, returning immediate 202 and spawning background build tasks."""
+    # Register order in list
+    WISECP_ORDERS.insert(0, {
+        "order_id": order.order_id,
+        "product_id": order.product_id,
+        "name": order.name,
+        "cpu": order.cpu,
+        "ram_mb": order.ram_mb,
+        "disk_gb": order.disk_gb,
+        "status": "PROVISIONING",
+        "ip_address": "",
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    })
     asyncio.create_task(deploy_wisecp_order_task(order))
     return {
         "status": "PROVISIONING",
         "message": f"VM deployment for order {order.order_id} queued successfully."
     }
+
+@app.get("/api/wisecp/orders")
+def get_wisecp_orders(api_key: str = Depends(verify_api_key)):
+    """Lists registered WiseCP automation orders."""
+    return WISECP_ORDERS
 
 # --- 8. Existing Standard VM Management Endpoints ---
 

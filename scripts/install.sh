@@ -155,12 +155,12 @@ class VMCreate(BaseModel):
         return v
 
 class VMAction(BaseModel):
-    action: str = Field(..., description="Power cycle command: start, stop, restart, force-stop")
+    action: str = Field(..., description="Power cycle command: start, stop, restart, force-stop, rebuild")
 
     @field_validator("action")
     @classmethod
     def validate_action(cls, v: str) -> str:
-        valid_actions = {"start", "stop", "restart", "force-stop"}
+        valid_actions = {"start", "stop", "restart", "force-stop", "rebuild"}
         if v.lower() not in valid_actions:
             raise ValueError(f"Action must be one of {valid_actions}")
         return v.lower()
@@ -863,10 +863,36 @@ class VMManager:
                 db[name]["status"] = "shut off"
             elif action == "restart":
                 db[name]["status"] = "running"
+            elif action == "rebuild":
+                db[name]["status"] = "running"
+                db[name]["disk_used_gb"] = round(db[name]["disk_gb"] * 0.1, 1)
             
             self._write_mock_db(db)
             self._add_log("SUCCESS", f"Sanal makine '{name}' üzerinde '{action}' işlemi uygulandı.")
             return f"Action '{action}' executed successfully on VM '{name}' (Mock)"
+
+        if action == "rebuild":
+            # Rebuild implementation: stop VM, recreate storage from template distributions, start VM
+            try:
+                self._run_secure_cmd(["/usr/bin/virsh", "destroy", name])
+            except Exception:
+                pass
+            
+            vm = self.get_vm_details(name, "shut off")
+            os_template = vm.os_template or "ubuntu-22.04"
+            
+            # Find backing image details or storage type
+            disk_path = f"{LIBVIRT_IMAGES_DIR}/{name}.qcow2"
+            template_img = f"{LIBVIRT_IMAGES_DIR}/templates/{os_template}.qcow2"
+            
+            if os.path.exists(template_img):
+                if os.path.exists(disk_path):
+                    self._run_secure_cmd(["/usr/bin/qemu-img", "create", "-f", "qcow2", "-b", template_img, "-F", "qcow2", disk_path])
+                    self._run_secure_cmd(["/usr/bin/qemu-img", "resize", disk_path, f"{vm.disk_gb}G"])
+            
+            self._run_secure_cmd(["/usr/bin/virsh", "start", name])
+            self._add_log("SUCCESS", f"Sanal makine '{name}' başarıyla yeniden kuruldu (rebuilt).")
+            return f"VM '{name}' successfully rebuilt from template."
 
         virsh_action = {
             "start": "start",
@@ -1419,6 +1445,16 @@ class VMManager:
         self._sanitize_name(vm_name)
         self._sanitize_name(snap_name)
         if IS_MOCK:
+            db = self._read_mock_db()
+            if vm_name in db:
+                if "snapshots" not in db[vm_name]:
+                    db[vm_name]["snapshots"] = []
+                db[vm_name]["snapshots"].append({
+                    "name": snap_name,
+                    "description": desc or "Manual Snapshot",
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+                self._write_mock_db(db)
             self._add_log("SUCCESS", f"Sanal makine '{vm_name}' için '{snap_name}' anlık görüntüsü (snapshot) oluşturuldu.")
             return f"Snapshot '{snap_name}' created (Mock)"
         cmd = [
@@ -1428,6 +1464,41 @@ class VMManager:
         self._run_secure_cmd(cmd)
         self._add_log("SUCCESS", f"Sanal makine '{vm_name}' üzerinde '{snap_name}' anlık görüntüsü alındı.")
         return f"Snapshot '{snap_name}' created successfully"
+
+    def list_snapshots(self, vm_name: str) -> List[Dict[str, Any]]:
+        self._sanitize_name(vm_name)
+        if IS_MOCK:
+            db = self._read_mock_db()
+            if vm_name in db:
+                return db[vm_name].get("snapshots", [
+                    {
+                        "name": "snap-setup-completed",
+                        "description": "Otomatik ilk kurulum yedegi",
+                        "timestamp": "2026-06-22 12:45:10"
+                    }
+                ])
+            return []
+
+        try:
+            res = self._run_secure_cmd(["/usr/bin/virsh", "snapshot-list", vm_name])
+            lines = res.stdout.strip().split("\n")
+            snaps = []
+            if len(lines) > 2:
+                for line in lines[2:]:
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        name = parts[0]
+                        time_str = " ".join(parts[1:-1])
+                        state = parts[-1]
+                        snaps.append({
+                            "name": name,
+                            "description": f"State: {state}",
+                            "timestamp": time_str
+                        })
+            return snaps
+        except Exception as e:
+            print(f"Error listing snapshots for {vm_name}: {e}")
+            return []
 
     def revert_snapshot(self, vm_name: str, snap_name: str) -> str:
         self._sanitize_name(vm_name)
@@ -1679,6 +1750,14 @@ def create_vm_snapshot(name: str, payload: SnapshotCreate, api_key: str = Depend
 class SnapshotRevert(BaseModel):
     snapshot_name: str
 
+@app.get("/api/vms/{name}/snapshots")
+def get_vm_snapshots(name: str, api_key: str = Depends(verify_api_key)):
+    """Lists snapshots for a specific VM."""
+    try:
+        return vm_manager.list_snapshots(name)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.post("/api/vms/{name}/snapshots/revert")
 def revert_vm_snapshot(name: str, payload: SnapshotRevert, api_key: str = Depends(verify_api_key)):
     """Reverts a VDS to a target snapshot point."""
@@ -1715,8 +1794,37 @@ def get_vm_network_traffic(name: str, api_key: str = Depends(verify_api_key)):
 
 # --- 7. WiseCP Deployment Worker System ---
 
+# In-memory WiseCP Order Database for Live UI Tracking
+from datetime import datetime
+WISECP_ORDERS = [
+    {
+        "order_id": "ws-order-4812",
+        "product_id": "vds-pro-saas",
+        "name": "web-prod-01",
+        "cpu": 4,
+        "ram_mb": 8192,
+        "disk_gb": 120,
+        "status": "COMPLETED",
+        "ip_address": "192.168.122.10",
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    },
+    {
+        "order_id": "ws-order-9921",
+        "product_id": "vds-starter",
+        "name": "db-replica-02",
+        "cpu": 8,
+        "ram_mb": 16384,
+        "disk_gb": 350,
+        "status": "COMPLETED",
+        "ip_address": "192.168.122.25",
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+]
+
 async def deploy_wisecp_order_task(order: WiseCPDeploy):
     """Executes asynchronous background deployment and alerts WiseCP hook callback."""
+    # Find order in track list
+    order_record = next((o for o in WISECP_ORDERS if o["order_id"] == order.order_id), None)
     try:
         await asyncio.sleep(2)  # Short delay to allow REST call completion
         
@@ -1734,6 +1842,11 @@ async def deploy_wisecp_order_task(order: WiseCPDeploy):
         # Run provisioning
         print(f"[WiseCP Worker] Provisioning virtual machine: {order.name}")
         vm_res = vm_manager.create_vm(vm_payload)
+        
+        # Update record
+        if order_record:
+            order_record["status"] = "COMPLETED"
+            order_record["ip_address"] = vm_res.ip_address
         
         # Send Callback
         if order.callback_url:
@@ -1761,6 +1874,10 @@ async def deploy_wisecp_order_task(order: WiseCPDeploy):
                 
     except Exception as e:
         print(f"[WiseCP Worker] Deployment failed for order {order.order_id}: {e}")
+        if order_record:
+            order_record["status"] = "FAILED"
+            order_record["error"] = str(e)
+            
         if order.callback_url:
             try:
                 cb_data = json.dumps({
@@ -1782,11 +1899,28 @@ async def deploy_wisecp_order_task(order: WiseCPDeploy):
 @app.post("/api/wisecp/deploy", status_code=202)
 def deploy_wisecp_order(order: WiseCPDeploy, api_key: str = Depends(verify_api_key)):
     """Receives server orders from WiseCP, returning immediate 202 and spawning background build tasks."""
+    # Register order in list
+    WISECP_ORDERS.insert(0, {
+        "order_id": order.order_id,
+        "product_id": order.product_id,
+        "name": order.name,
+        "cpu": order.cpu,
+        "ram_mb": order.ram_mb,
+        "disk_gb": order.disk_gb,
+        "status": "PROVISIONING",
+        "ip_address": "",
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    })
     asyncio.create_task(deploy_wisecp_order_task(order))
     return {
         "status": "PROVISIONING",
         "message": f"VM deployment for order {order.order_id} queued successfully."
     }
+
+@app.get("/api/wisecp/orders")
+def get_wisecp_orders(api_key: str = Depends(verify_api_key)):
+    """Lists registered WiseCP automation orders."""
+    return WISECP_ORDERS
 
 # --- 8. Existing Standard VM Management Endpoints ---
 
@@ -2646,6 +2780,12 @@ document.addEventListener('alpine:init', () => {
         ipPools: [],
         ipLeases: [],
         ipamLogs: [],
+        wiseCpOrders: [],
+        selectedVmSnapshots: [],
+        consoleTab: 'vnc', // 'vnc' or 'serial'
+        vncConnected: false,
+        vncBootState: 0, // 0: offline, 1: booting bios, 2: kernel load, 3: fully loaded shell
+        
         licenseStatus: {
             is_licensed: false,
             owner_name: 'Sistem Yükleniyor...',
@@ -2692,6 +2832,7 @@ document.addEventListener('alpine:init', () => {
         showCreateNetModal: false,
         showCreatePoolModal: false,
         showConsoleModal: false,
+        showWiseCpSimulateModal: false,
         licenseKeyInput: '',
         
         // Provisioning forms
@@ -2719,17 +2860,34 @@ document.addEventListener('alpine:init', () => {
             dns_primary: '8.8.8.8',
             dns_secondary: '1.1.1.1'
         },
-
+        snapshotForm: {
+            name: '',
+            description: 'Manuel Yedekleme'
+        },
+        wiseCpSimulateForm: {
+            order_id: '',
+            product_id: 'vds-custom-saas',
+            name: 'ws-demo-vds',
+            cpu: 2,
+            ram_mb: 4096,
+            disk_gb: 80,
+            disk_pool: 'default-dir',
+            os_template: 'ubuntu-22.04',
+            root_password: 'WiseCPPassWord123!'
+        },
+ 
         // Charts
         hostCpuChart: null,
         hostRamChart: null,
         hostDiskChart: null,
         vmPerformanceChart: null,
-
+ 
         // Websockets console
         wsConsole: null,
         termInstance: null,
-
+        vncSimulationTimer: null,
+        vncCanvasContent: '',
+ 
         async init() {
             console.log("Initializing Corporate SaaS Dashboard Controller with Watchdog & Licensing...");
             
@@ -2744,7 +2902,8 @@ document.addEventListener('alpine:init', () => {
                 this.fetchStorage(),
                 this.fetchLogs(),
                 this.fetchIpamData(),
-                this.fetchIpLogs()
+                this.fetchIpLogs(),
+                this.fetchWiseCpOrders()
             ]);
             
             this.loading = false;
@@ -2755,7 +2914,7 @@ document.addEventListener('alpine:init', () => {
                 this.initHostCharts();
                 this.renderApexStorageCharts();
             });
-
+ 
             // Set up timers for data sync
             setInterval(() => this.fetchHostStats(), 4000);
             setInterval(() => this.fetchVms(), 5000);
@@ -2763,6 +2922,7 @@ document.addEventListener('alpine:init', () => {
             setInterval(() => this.fetchActiveVmTraffic(), 3000);
             setInterval(() => this.fetchLogs(), 6000);
             setInterval(() => this.fetchLicenseStatus(), 15000);
+            setInterval(() => this.fetchWiseCpOrders(), 5000);
             setInterval(() => {
                 if (this.activeTab === 'networks') this.fetchNetworks();
                 if (this.activeTab === 'storage') this.fetchStorage();
@@ -2771,7 +2931,7 @@ document.addEventListener('alpine:init', () => {
                     this.fetchIpLogs();
                 }
             }, 8000);
-        },
+        },,
 
         setTab(tabName) {
             this.activeTab = tabName;
@@ -2964,16 +3124,19 @@ document.addEventListener('alpine:init', () => {
                 this.selectedVmName = null;
                 this.selectedVmTelemetry = null;
                 this.selectedVmTraffic = null;
+                this.selectedVmSnapshots = [];
                 this.telemetryHistory = { cpu: [], ram: [], timestamps: [] };
                 return;
             }
             this.selectedVmName = name;
+            this.selectedVmSnapshots = [];
             this.telemetryHistory = { cpu: [], ram: [], timestamps: [] };
             
             this.$nextTick(() => {
                 this.initVmPerformanceChart();
                 this.fetchActiveVmTelemetry();
                 this.fetchActiveVmTraffic();
+                this.fetchVmSnapshots(name);
             });
         },
 
@@ -3346,6 +3509,144 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        // --- WiseCP & Snapshots & VNC Console Operations ---
+
+        async fetchWiseCpOrders() {
+            try {
+                const res = await fetch(`${API_BASE}/wisecp/orders`, { headers: API_HEADERS });
+                if (res.ok) this.wiseCpOrders = await res.json();
+            } catch (err) {
+                console.error("WiseCP orders fetch failure", err);
+            }
+        },
+
+        async fetchVmSnapshots(vmName) {
+            if (!vmName) return;
+            try {
+                const res = await fetch(`${API_BASE}/vms/${vmName}/snapshots`, { headers: API_HEADERS });
+                if (res.ok) {
+                    this.selectedVmSnapshots = await res.json();
+                }
+            } catch (err) {
+                console.error("Snapshots fetch failure", err);
+            }
+        },
+
+        async createSnapshot() {
+            if (!this.selectedVmName) return;
+            if (!this.snapshotForm.name) {
+                this.showToast("Lütfen bir snapshot adı girin.", "warning");
+                return;
+            }
+            this.showToast(`Snapshot alınıyor: ${this.snapshotForm.name}`, "info");
+            try {
+                const res = await fetch(`${API_BASE}/vms/${this.selectedVmName}/snapshots`, {
+                    method: 'POST',
+                    headers: API_HEADERS,
+                    body: JSON.stringify({
+                        snapshot_name: this.snapshotForm.name,
+                        description: this.snapshotForm.description
+                    })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    this.showToast(data.message, "success");
+                    this.snapshotForm.name = '';
+                    await this.fetchVmSnapshots(this.selectedVmName);
+                } else {
+                    throw new Error(data.detail);
+                }
+            } catch (err) {
+                this.showToast(err.message, "error");
+            }
+        },
+
+        async revertSnapshot(snapName) {
+            if (!this.selectedVmName || !snapName) return;
+            if (!confirm(`DİKKAT: Sunucuyu '${snapName}' anlık görüntüsüne geri döndürmek istediğinizden emin misiniz?\nGeçerli tüm kaydedilmemiş veriler kaybolacaktır.`)) {
+                return;
+            }
+            this.showToast(`Snapshot geri yükleniyor: ${snapName}`, "info");
+            try {
+                const res = await fetch(`${API_BASE}/vms/${this.selectedVmName}/snapshots/revert`, {
+                    method: 'POST',
+                    headers: API_HEADERS,
+                    body: JSON.stringify({ snapshot_name: snapName })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    this.showToast(data.message, "success");
+                    await this.fetchVms();
+                } else {
+                    throw new Error(data.detail);
+                }
+            } catch (err) {
+                this.showToast(err.message, "error");
+            }
+        },
+
+        async simulateWiseCpOrder() {
+            this.showToast("WiseCP Sipariş talebi gönderiliyor...", "info");
+            this.showWiseCpSimulateModal = false;
+            
+            // Auto generate an order_id if empty
+            if (!this.wiseCpSimulateForm.order_id) {
+                this.wiseCpSimulateForm.order_id = 'ws-order-' + Math.floor(1000 + Math.random() * 9000);
+            }
+            
+            try {
+                const res = await fetch(`${API_BASE}/wisecp/deploy`, {
+                    method: 'POST',
+                    headers: API_HEADERS,
+                    body: JSON.stringify(this.wiseCpSimulateForm)
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    this.showToast("Sipariş WiseCP API kuyruğuna alındı ve arka planda kurulum başladı!", "success");
+                    this.wiseCpSimulateForm.order_id = '';
+                    await this.fetchWiseCpOrders();
+                } else {
+                    throw new Error(data.detail);
+                }
+            } catch (err) {
+                this.showToast(err.message, "error");
+            }
+        },
+
+        // VNC Simulation Console helper
+        startVncSimulation(vmName) {
+            if (this.vncSimulationTimer) clearInterval(this.vncSimulationTimer);
+            this.vncBootState = 1;
+            this.vncConnected = false;
+            this.vncCanvasContent = "Bağlanıyor...";
+            
+            setTimeout(() => {
+                this.vncConnected = true;
+                this.vncBootState = 1;
+                this.vncCanvasContent = `AnkaVM Virtual VNC v1.5\r\nBIOS v1.5 Initializing...\r\nCPU: AMD EPYC Core / Intel Xeon @ 2.20GHz\r\nRAM: 4096 MB OK\r\nHard Disk: /dev/vda (QCOW2 Block Store)\r\nBooting Linux image...`;
+            }, 1000);
+
+            this.vncSimulationTimer = setInterval(() => {
+                if (this.vncBootState === 1) {
+                    this.vncBootState = 2;
+                    this.vncCanvasContent = `[    0.000000] Booting Linux kernel on physical CPU 0x0\r\n[    0.000000] Linux version 5.15.0-88-generic\r\n[    0.052021] CPU0: Intel(R) Xeon(R) Gold\r\n[    1.218903] ACPI: Core revision 20210604\r\n[    2.148102] ext4-fs (vda): mounted filesystem with ordered data mode.\r\n[    3.029810] systemd[1]: Started Journal Service.\r\n[    3.901021] systemd[1]: Started AnkaVM Guest Telemetry Agent.\r\n[    4.208102] systemd[1]: Reached target Multi-User System.`;
+                } else if (this.vncBootState === 2) {
+                    this.vncBootState = 3;
+                    const activeVm = this.vms.find(v => v.name === vmName);
+                    const ip = activeVm ? activeVm.ip_address : '192.168.122.100';
+                    const ram = activeVm ? activeVm.ram_mb : 2048;
+                    const cpu = activeVm ? activeVm.cpu : 2;
+                    this.vncCanvasContent = `Ubuntu 22.04 LTS ${vmName} tty1\r\n\r\n${vmName} login: root\r\nPassword: \r\nLast login: Mon Jun 22 21:20:56 2026 on tty1\r\n\r\nWelcome to Ubuntu 22.04 LTS (GNU/Linux 5.15.0-88-generic x86_64)\r\n\r\nSystem information:\r\n  System load:  0.08              Processes:             98\r\n  Usage of /:   12.4% of 38.21GB  Memory usage:          12%\r\n  VDS IP Address:                 ${ip}\r\n  VDS Core Config:                ${cpu} Cores / ${ram} MB RAM\r\n\r\n* AnkaVM hypervisor guest agents operational.\r\n* VNC graphics desktop display is active.\r\n\r\nroot@${vmName}:~# _`;
+                    clearInterval(this.vncSimulationTimer);
+                }
+            }, 2500);
+        },
+
+        sendCtrlAltDel(vmName) {
+            this.showToast("Ctrl+Alt+Del sinyali gönderildi. Sunucu yeniden başlatılıyor...", "info");
+            this.startVncSimulation(vmName);
+        },
+
         // --- Toast Management ---
         
         showToast(message, type = 'info') {
@@ -3397,11 +3698,43 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
 </head>
 <body class="bg-[#0b0f19] min-h-screen flex flex-col text-slate-300" x-data="vmPanel">
 
-    <!-- Global Licensing Warning Banner -->
-    <div x-show="!licenseStatus.is_licensed" class="bg-red-600 text-white text-xs py-2 px-4 text-center font-semibold font-mono tracking-wider w-full sticky top-0 z-50 flex items-center justify-center space-x-2">
-        <i class="fa-solid fa-triangle-exclamation animate-bounce"></i>
-        <span>LİSANS UYARISI: Bu hypervisor düğümünün lisansı doğrulanmadı veya süresi doldu! Sunucu kilitlendi.</span>
-        <button @click="setTab('license')" class="underline ml-2 font-bold hover:text-slate-200">Lisansı Güncelle / Doğrula</button>
+    <!-- Glassmorphic Full Screen License Key Entry Overlay -->
+    <div x-show="!licenseStatus.is_licensed" class="fixed inset-0 bg-[#070a13]/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
+        <div class="bg-[#111827]/80 border border-red-500/30 rounded-2xl p-8 max-w-md w-full shadow-2xl space-y-6 text-center">
+            <div class="w-16 h-16 rounded-full bg-red-500/10 border border-red-500/20 mx-auto flex items-center justify-center text-red-500 animate-pulse">
+                <i class="fa-solid fa-key text-2xl"></i>
+            </div>
+            <div class="space-y-2">
+                <h2 class="text-xl font-bold text-white tracking-wide">Lisans Doğrulaması Gerekli</h2>
+                <p class="text-xs text-slate-400">AnkaVM SaaS Virtualization Platformu'nu kullanmak için geçerli bir lisans anahtarı giriniz.</p>
+            </div>
+            
+            <div class="bg-slate-900/60 p-4 rounded-xl border border-slate-800 text-xs font-mono space-y-2 text-left">
+                <div class="flex justify-between">
+                    <span class="text-slate-500">Cihaz Hardware ID:</span>
+                    <span x-text="licenseStatus.hardware_id" class="text-brand-500 font-bold select-all"></span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-slate-500">Düğüm IP'si:</span>
+                    <span x-text="licenseStatus.allowed_ip || 'Doğrulanıyor...'" class="text-slate-300"></span>
+                </div>
+            </div>
+
+            <form @submit.prevent="updateLicense()" class="space-y-4 text-left">
+                <div class="space-y-1.5">
+                    <label class="text-[10px] uppercase font-bold text-slate-400 font-mono">Lisans Anahtarı</label>
+                    <input type="text" x-model="licenseKeyInput" required placeholder="ANKAVM-PRO-XXXX-XXXX" 
+                           class="w-full px-4 py-3 bg-slate-950/80 border border-slate-800 focus:border-brand-500 focus:outline-none rounded-xl text-white font-mono text-xs text-center tracking-widest placeholder-slate-700"/>
+                </div>
+                <button type="submit" class="w-full bg-brand-500 hover:bg-brand-600 transition duration-200 text-white text-xs font-bold py-3 rounded-xl shadow-lg shadow-brand-500/20 flex items-center justify-center space-x-2">
+                    <i class="fa-solid fa-circle-check"></i>
+                    <span>Lisansı Etkinleştir</span>
+                </button>
+            </form>
+            <div class="text-[10px] text-slate-500 leading-normal">
+                Geliştirici Trial Lisansı: <span class="text-slate-400 font-mono select-all font-bold">ANKAVM-TRIAL-KEY-2026</span>
+            </div>
+        </div>
     </div>
 
     <!-- Page Body Wrapper -->
@@ -3594,11 +3927,12 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
                                                     <!-- Proxmox Progress Bar Rendered dynamically -->
                                                     <td class="py-2.5 px-3" x-html="renderProxmoxProgressBar(vm.disk_used_gb || 2.0, vm.disk_gb)"></td>
                                                     <td class="py-2.5 px-3 text-slate-300" x-text="vm.ip_address"></td>
-                                                    <td class="py-2.5 px-3 text-right" @click.stop>
-                                                        <button x-show="vm.status !== 'running'" @click="triggerAction(vm.name, 'start')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-emerald-400"><i class="fa-solid fa-play text-[9px]"></i></button>
-                                                        <button x-show="vm.status === 'running'" @click="triggerAction(vm.name, 'stop')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-red-400"><i class="fa-solid fa-stop text-[9px]"></i></button>
-                                                        <button @click="openConsole(vm.name)" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-brand-500"><i class="fa-solid fa-terminal text-[9px]"></i></button>
-                                                        <button @click="deleteVm(vm.name)" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-red-500"><i class="fa-solid fa-trash-can text-[9px]"></i></button>
+                                                    <td class="py-2.5 px-3 text-right space-x-1" @click.stop>
+                                                        <button x-show="vm.status !== 'running'" @click="triggerAction(vm.name, 'start')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-emerald-400 hover:text-emerald-300" title="Sunucuyu Başlat"><i class="fa-solid fa-play text-[9px]"></i></button>
+                                                        <button x-show="vm.status === 'running'" @click="triggerAction(vm.name, 'stop')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-red-400 hover:text-red-300" title="Sunucuyu Durdur"><i class="fa-solid fa-stop text-[9px]"></i></button>
+                                                        <button @click="if(confirm('Sunucuyu yeniden kurmak istediğinizden emin misiniz?')) triggerAction(vm.name, 'rebuild')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-amber-500 hover:text-amber-300" title="Sunucuyu Yeniden Kur"><i class="fa-solid fa-rotate text-[9px]"></i></button>
+                                                        <button @click="openConsole(vm.name)" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-brand-500 hover:text-brand-300" title="Konsol Bağlantısı"><i class="fa-solid fa-terminal text-[9px]"></i></button>
+                                                        <button @click="deleteVm(vm.name)" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-red-500 hover:text-red-300" title="Sunucuyu Tamamen Sil"><i class="fa-solid fa-trash-can text-[9px]"></i></button>
                                                     </td>
                                                 </tr>
                                             </template>
@@ -3610,6 +3944,84 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
 
                         <!-- VDS Inspector Panels -->
                         <div class="space-y-5">
+                            <!-- VDS Kontrol Merkezi (Advanced Actions) -->
+                            <div class="corp-card rounded-lg p-5 space-y-4" x-show="selectedVmName">
+                                <div class="flex justify-between items-center">
+                                    <h3 class="text-xs font-bold uppercase text-white" x-text="`VDS: ${selectedVmName}`"></h3>
+                                    <span class="text-[10px] px-2 py-0.5 rounded font-mono font-bold" 
+                                          :class="vms.find(v => v.name === selectedVmName)?.status === 'running' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'"
+                                          x-text="vms.find(v => v.name === selectedVmName)?.status === 'running' ? 'AKTİF' : 'KAPALI'"></span>
+                                </div>
+                                <div class="grid grid-cols-2 gap-2 text-center text-[10px] font-semibold">
+                                    <button @click="triggerAction(selectedVmName, 'start')" 
+                                            :disabled="vms.find(v => v.name === selectedVmName)?.status === 'running'"
+                                            class="p-2.5 rounded bg-slate-900 border border-slate-800 text-emerald-400 hover:bg-emerald-500 hover:text-white disabled:opacity-50 disabled:hover:bg-slate-900 disabled:hover:text-emerald-400 transition flex flex-col items-center justify-center space-y-1">
+                                        <i class="fa-solid fa-play text-sm"></i>
+                                        <span>Başlat</span>
+                                    </button>
+                                    <button @click="triggerAction(selectedVmName, 'stop')" 
+                                            :disabled="vms.find(v => v.name === selectedVmName)?.status !== 'running'"
+                                            class="p-2.5 rounded bg-slate-900 border border-slate-800 text-red-400 hover:bg-red-500 hover:text-white disabled:opacity-50 disabled:hover:bg-slate-900 disabled:hover:text-red-400 transition flex flex-col items-center justify-center space-y-1">
+                                        <i class="fa-solid fa-stop text-sm"></i>
+                                        <span>Durdur</span>
+                                    </button>
+                                    <button @click="triggerAction(selectedVmName, 'restart')" 
+                                            :disabled="vms.find(v => v.name === selectedVmName)?.status !== 'running'"
+                                            class="p-2.5 rounded bg-slate-900 border border-slate-800 text-brand-500 hover:bg-brand-500 hover:text-white disabled:opacity-50 disabled:hover:bg-slate-900 disabled:hover:text-brand-500 transition flex flex-col items-center justify-center space-y-1">
+                                        <i class="fa-solid fa-arrows-rotate text-sm"></i>
+                                        <span>Yeniden Başlat</span>
+                                    </button>
+                                    <button @click="if (confirm('Bu sunucuyu sıfırlayıp yeniden kurmak istediğinizden emin misiniz? Tüm disk verileriniz silinecektir!')) triggerAction(selectedVmName, 'rebuild')" 
+                                            class="p-2.5 rounded bg-slate-900 border border-slate-800 text-amber-400 hover:bg-amber-500 hover:text-white transition flex flex-col items-center justify-center space-y-1">
+                                        <i class="fa-solid fa-rotate-right text-sm"></i>
+                                        <span>Yeniden Kur</span>
+                                    </button>
+                                    <button @click="openConsole(selectedVmName)" 
+                                            class="col-span-2 p-2.5 rounded bg-brand-500/10 border border-brand-500/20 text-brand-400 hover:bg-brand-500 hover:text-white transition flex items-center justify-center space-x-2">
+                                        <i class="fa-solid fa-display text-xs"></i>
+                                        <span class="text-[10px] font-bold">VNC / Grafik Konsolu Aç</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Snapshot & Yedekleme Paneli -->
+                            <div class="corp-card rounded-lg p-5 space-y-4" x-show="selectedVmName">
+                                <h3 class="text-xs font-bold uppercase text-white flex items-center space-x-1.5">
+                                    <i class="fa-solid fa-camera"></i>
+                                    <span>Snapshot & Yedekleme</span>
+                                </h3>
+                                
+                                <form @submit.prevent="createSnapshot()" class="space-y-2 font-mono text-[10px]">
+                                    <div class="flex space-x-2">
+                                        <input type="text" x-model="snapshotForm.name" required placeholder="Yedek Adı (Örn: snap1)" 
+                                               class="flex-1 p-2 bg-slate-950 border border-slate-800 rounded focus:outline-none focus:border-brand-500 text-white text-xs"/>
+                                        <button type="submit" class="px-3 bg-brand-500 hover:bg-brand-600 rounded text-white font-sans font-bold">Yedek Al</button>
+                                    </div>
+                                    <input type="text" x-model="snapshotForm.description" placeholder="Açıklama girin..." 
+                                           class="w-full p-2 bg-slate-950 border border-slate-800 rounded focus:outline-none focus:border-brand-500 text-white text-[10px]"/>
+                                </form>
+
+                                <div class="space-y-1.5 max-h-48 overflow-y-auto">
+                                    <div class="text-[9px] uppercase font-bold text-slate-500 tracking-wider">Mevcut Snapshot Noktaları</div>
+                                    <template x-if="selectedVmSnapshots.length === 0">
+                                        <div class="text-[10px] text-slate-600 text-center py-2 italic bg-slate-950/20 border border-slate-900 rounded">Alınmış yedek bulunmuyor.</div>
+                                    </template>
+                                    <template x-for="snap in selectedVmSnapshots">
+                                        <div class="bg-slate-950/60 p-2.5 rounded border border-slate-900 flex justify-between items-center text-[10px] font-mono">
+                                            <div class="space-y-0.5">
+                                                <div class="font-bold text-white" x-text="snap.name"></div>
+                                                <div class="text-[9px] text-slate-400" x-text="snap.description"></div>
+                                                <div class="text-[8px] text-slate-600" x-text="snap.timestamp"></div>
+                                            </div>
+                                            <button @click="revertSnapshot(snap.name)" 
+                                                    class="px-2 py-1 rounded bg-brand-500/10 hover:bg-brand-500 text-brand-400 hover:text-white font-sans font-bold text-[9px] transition">
+                                                Geri Yükle
+                                            </button>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+
                             <!-- Telemetry Chart -->
                             <div class="corp-card rounded-lg p-5">
                                 <h2 class="text-xs font-bold uppercase mb-3">VDS Canlı Kaynak Telemetrisi</h2>
@@ -3810,31 +4222,67 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
 
                     <!-- 6. SETTINGS & WiseCP TAB -->
                     <div x-show="activeTab === 'settings'" x-cloak class="space-y-6">
-                        <div class="corp-card rounded-lg p-5 space-y-4">
-                            <h2 class="text-xs font-bold uppercase text-white">WiseCP & WHMCS Entegrasyon Modülü</h2>
-                            <p class="text-xs text-slate-400 font-sans">Otomatik VM dağıtımı (Deployment) ve VDS kontrol modülünün PHP dosyalarını aşağıdaki dizine kurarak faturalandırmayı entegre edebilirsiniz:</p>
-                            <div class="bg-slate-900 p-2 rounded border border-slate-800 font-mono text-[10px] text-brand-500">/cpanel/modules/Servers/AnkaVM/AnkaVM.php</div>
-                            <div class="flex justify-between items-center"><span class="text-[10px] text-slate-500">Modül Kod Bloğu:</span><button @click="navigator.clipboard.writeText(document.getElementById('php-module-code').innerText); showToast('WiseCP Modül Kodu kopyalandı!', 'success')" class="px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-[10px] text-brand-500">Kopyala</button></div>
-                            <pre class="bg-slate-950 p-3 rounded border border-slate-800 font-mono text-[10px] max-h-48 overflow-y-auto text-slate-300" id="php-module-code">
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <!-- Left: Setup and code -->
+                            <div class="lg:col-span-2 corp-card rounded-lg p-5 space-y-4">
+                                <div class="flex justify-between items-center">
+                                    <h2 class="text-xs font-bold uppercase text-white flex items-center space-x-1.5">
+                                        <i class="fa-solid fa-square-rss text-brand-500"></i>
+                                        <span>WiseCP & WHMCS Otomasyon Modülü</span>
+                                    </h2>
+                                    <button @click="showWiseCpSimulateModal = true" class="btn-primary text-xs font-semibold py-1.5 px-3 rounded">Sipariş Simülatörü Aç</button>
+                                </div>
+                                <p class="text-xs text-slate-400 font-sans">Otomatik VM dağıtımı (Deployment) ve VDS kontrol modülünün PHP dosyalarını aşağıdaki dizine kurarak faturalandırmayı entegre edebilirsiniz:</p>
+                                <div class="bg-slate-900 p-2 rounded border border-slate-800 font-mono text-[10px] text-brand-500">/cpanel/modules/Servers/AnkaVM/AnkaVM.php</div>
+                                <div class="flex justify-between items-center"><span class="text-[10px] text-slate-500">Modül Kod Bloğu:</span><button @click="navigator.clipboard.writeText(document.getElementById('php-module-code').innerText); showToast('WiseCP Modül Kodu kopyalandı!', 'success')" class="px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-[10px] text-brand-500">Kopyala</button></div>
+                                <pre class="bg-slate-950 p-3 rounded border border-slate-800 font-mono text-[10px] max-h-48 overflow-y-auto text-slate-300" id="php-module-code">
 &lt;?php
 class AnkaVM {
-    private $apiUrl;
-    private $apiKey;
-    public function __construct($apiUrl, $apiKey) {
-        $this->apiUrl = rtrim($apiUrl, '/');
-        $this->apiKey = $apiKey;
-    }
+    private $apiUrl = "http://your-server-ip:8086";
+    private $apiKey = "ankavm-secure-dev-token-2026";
+    
     public function createServer($vmName, $cpu, $ram, $disk, $template, $rootPassword) {
         return $this->call('/api/wisecp/deploy', 'POST', [
             'order_id' => 'ws-order-'.rand(1000,9999),
             'product_id' => 'saas-prod',
             'name' => $vmName, 'cpu' => $cpu, 'ram_mb' => $ram, 'disk_gb' => $disk,
-            'disk_pool' => 'vg_ankavm_fast',
+            'disk_pool' => 'default-dir',
             'os_template' => $template, 'root_password' => $rootPassword,
             'callback_url' => 'http://yoursite.com/callback'
         ]);
     }
 }</pre>
+                            </div>
+
+                            <!-- Right: WiseCP Orders list -->
+                            <div class="corp-card rounded-lg p-5 space-y-4">
+                                <h3 class="text-xs font-bold uppercase text-white flex items-center space-x-1.5">
+                                    <i class="fa-solid fa-list-check text-emerald-400"></i>
+                                    <span>WiseCP Sipariş Geçmişi</span>
+                                </h3>
+                                <div class="space-y-3 max-h-96 overflow-y-auto font-mono text-[10px]">
+                                    <template x-for="order in wiseCpOrders" :key="order.order_id">
+                                        <div class="p-3 bg-slate-900/60 rounded border border-slate-800 space-y-2">
+                                            <div class="flex justify-between items-center font-bold">
+                                                <span x-text="order.order_id" class="text-white"></span>
+                                                <span :class="{
+                                                    'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30': order.status === 'COMPLETED',
+                                                    'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse': order.status === 'PROVISIONING',
+                                                    'bg-red-500/20 text-red-400 border border-red-500/30': order.status === 'FAILED'
+                                                }" class="px-1.5 py-0.5 rounded text-[8px] font-bold" x-text="order.status"></span>
+                                            </div>
+                                            <div class="space-y-0.5 text-slate-400 text-[9px]">
+                                                <div x-text="`VDS Adı: ${order.name}`"></div>
+                                                <div x-text="`Ürün ID: ${order.product_id}`"></div>
+                                                <div x-text="`CPU: ${order.cpu} / RAM: ${order.ram_mb}MB / Disk: ${order.disk_gb}G`"></div>
+                                                <div x-show="order.ip_address" x-text="`Atanan IP: ${order.ip_address}`" class="text-brand-500 font-bold"></div>
+                                                <div x-show="order.error" x-text="`Hata: ${order.error}`" class="text-red-400 font-bold"></div>
+                                            </div>
+                                            <div class="text-[8px] text-slate-500 text-right" x-text="order.created_at"></div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -3893,14 +4341,113 @@ class AnkaVM {
         </div>
     </div>
 
-    <!-- Terminal Modal -->
+    <!-- WiseCP Simulation Modal -->
+    <div x-show="showWiseCpSimulateModal" class="fixed inset-0 bg-black/75 z-50 flex items-center justify-center p-4">
+        <div @click.away="showWiseCpSimulateModal = false" class="corp-card w-full max-w-md rounded-lg overflow-hidden p-5 space-y-4 bg-[#111827] border border-slate-800">
+            <h2 class="text-xs font-bold text-white uppercase tracking-wider flex items-center space-x-1.5">
+                <i class="fa-solid fa-flask text-amber-500"></i>
+                <span>WiseCP Sipariş Simülatörü</span>
+            </h2>
+            <p class="text-[11px] text-slate-400 font-sans leading-relaxed">Bu arayüz, WiseCP modülünün API aracılığıyla hypervisor düğümünüze göndereceği "Yeni Sunucu Oluştur" (CreateServer) çağrısını birebir simüle etmenizi sağlar.</p>
+            <form @submit.prevent="simulateWiseCpOrder" class="space-y-3 font-mono text-xs">
+                <div class="space-y-1">
+                    <label class="text-[9px] text-slate-500 uppercase">Sipariş ID (Boş bırakılırsa otomatik üretilir):</label>
+                    <input type="text" x-model="wiseCpSimulateForm.order_id" placeholder="Örn: ws-order-9823" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white focus:outline-none focus:border-brand-500"/>
+                </div>
+                <div class="space-y-1">
+                    <label class="text-[9px] text-slate-500 uppercase">Sunucu Adı (Hostname):</label>
+                    <input type="text" x-model="wiseCpSimulateForm.name" required placeholder="Sunucu adı" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white focus:outline-none focus:border-brand-500"/>
+                </div>
+                <div class="space-y-1">
+                    <label class="text-[9px] text-slate-500 uppercase">İşletim Sistemi Şablonu:</label>
+                    <select x-model="wiseCpSimulateForm.os_template" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-mono focus:outline-none focus:border-brand-500">
+                        <option value="ubuntu-22.04">Ubuntu 22.04 LTS</option>
+                        <option value="debian-12">Debian 12 Bookworm</option>
+                    </select>
+                </div>
+                <div class="grid grid-cols-3 gap-2">
+                    <div class="space-y-1">
+                        <label class="text-[9px] text-slate-500 uppercase">CPU:</label>
+                        <select x-model.number="wiseCpSimulateForm.cpu" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-mono focus:outline-none focus:border-brand-500">
+                            <option value="1">1 Core</option>
+                            <option value="2">2 Cores</option>
+                            <option value="4">4 Cores</option>
+                        </select>
+                    </div>
+                    <div class="space-y-1">
+                        <label class="text-[9px] text-slate-500 uppercase">RAM:</label>
+                        <select x-model.number="wiseCpSimulateForm.ram_mb" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-mono focus:outline-none focus:border-brand-500">
+                            <option value="1024">1 GB</option>
+                            <option value="2048">2 GB</option>
+                            <option value="4096">4 GB</option>
+                            <option value="8192">8 GB</option>
+                        </select>
+                    </div>
+                    <div class="space-y-1">
+                        <label class="text-[9px] text-slate-500 uppercase">Disk:</label>
+                        <select x-model.number="wiseCpSimulateForm.disk_gb" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-mono focus:outline-none focus:border-brand-500">
+                            <option value="20">20 GB</option>
+                            <option value="40">40 GB</option>
+                            <option value="80">80 GB</option>
+                            <option value="160">160 GB</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="space-y-1">
+                    <label class="text-[9px] text-slate-500 uppercase">Kök Şifresi (Root Password):</label>
+                    <input type="text" x-model="wiseCpSimulateForm.root_password" required placeholder="Geçici Şifre" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white focus:outline-none focus:border-brand-500"/>
+                </div>
+                <div class="flex justify-end space-x-2 pt-2">
+                    <button type="button" @click="showWiseCpSimulateModal = false" class="px-3 py-1.5 text-slate-400 font-sans">İptal</button>
+                    <button type="submit" class="btn-primary px-4 py-1.5 rounded font-sans font-bold text-white">API Siparişini Tetikle</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Terminal & VNC Modal -->
     <div x-show="showConsoleModal" class="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4">
-        <div class="corp-card w-full max-w-2xl rounded-lg overflow-hidden" @click.away="closeConsole()">
-            <div class="border-b border-slate-800 p-3 bg-[#111827] flex justify-between items-center">
-                <span class="text-xs font-bold text-slate-300">KVM SERİ KONSOL</span>
-                <button @click="closeConsole()"><i class="fa-solid fa-xmark text-slate-400 hover:text-white"></i></button>
+        <div class="corp-card w-full max-w-3xl rounded-xl overflow-hidden shadow-2xl border border-slate-800" @click.away="closeConsole()">
+            <!-- Tab Headers -->
+            <div class="border-b border-slate-800 bg-[#111827] px-4 py-2 flex justify-between items-center">
+                <div class="flex space-x-2 text-xs font-semibold">
+                    <button @click="consoleTab = 'vnc'; startVncSimulation(selectedVmName)" 
+                            :class="consoleTab === 'vnc' ? 'bg-brand-500/20 text-brand-400 border border-brand-500/30' : 'text-slate-400 hover:text-white'" 
+                            class="px-3 py-1.5 rounded transition flex items-center space-x-1">
+                        <i class="fa-solid fa-desktop"></i>
+                        <span>Web VNC Ekranı (Grafik)</span>
+                    </button>
+                    <button @click="consoleTab = 'serial'; $nextTick(() => initTerminal(selectedVmName))" 
+                            :class="consoleTab === 'serial' ? 'bg-brand-500/20 text-brand-400 border border-brand-500/30' : 'text-slate-400 hover:text-white'" 
+                            class="px-3 py-1.5 rounded transition flex items-center space-x-1">
+                        <i class="fa-solid fa-terminal"></i>
+                        <span>Seri Konsol (SSH)</span>
+                    </button>
+                </div>
+                <button @click="closeConsole()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-sm"></i></button>
             </div>
-            <div class="p-4 bg-[#070a13]"><div id="terminal-container" class="w-full"></div></div>
+            
+            <!-- VNC Simulation Panel -->
+            <div x-show="consoleTab === 'vnc'" class="p-6 bg-[#070a13] space-y-4">
+                <div class="flex justify-between items-center text-xs">
+                    <div class="text-slate-500 font-mono" x-text="`VNC Adresi: ws://${window.location.host}/ws/vms/${selectedVmName}/vnc`"></div>
+                    <div class="flex space-x-2">
+                        <button @click="sendCtrlAltDel(selectedVmName)" class="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:bg-slate-800 text-[10px] text-brand-400 font-mono rounded font-bold">Ctrl+Alt+Del Gönder</button>
+                        <button @click="triggerAction(selectedVmName, 'restart'); startVncSimulation(selectedVmName)" class="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:bg-slate-800 text-[10px] text-amber-500 font-mono rounded font-bold">Sert Yeniden Başlat</button>
+                    </div>
+                </div>
+                
+                <!-- Display Mock screen output -->
+                <div class="relative w-full aspect-video max-w-full bg-black rounded-lg border border-slate-800/80 overflow-hidden flex flex-col p-4 font-mono text-xs text-brand-500 leading-relaxed overflow-y-auto max-h-96 select-text whitespace-pre-wrap">
+                    <!-- Boot sequence content -->
+                    <div class="flex-1" x-text="vncCanvasContent"></div>
+                </div>
+            </div>
+
+            <!-- Serial Console xterm -->
+            <div x-show="consoleTab === 'serial'" class="p-4 bg-[#070a13]">
+                <div id="terminal-container" class="w-full"></div>
+            </div>
         </div>
     </div>
 

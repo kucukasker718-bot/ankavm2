@@ -293,10 +293,36 @@ class VMManager:
                 db[name]["status"] = "shut off"
             elif action == "restart":
                 db[name]["status"] = "running"
+            elif action == "rebuild":
+                db[name]["status"] = "running"
+                db[name]["disk_used_gb"] = round(db[name]["disk_gb"] * 0.1, 1)
             
             self._write_mock_db(db)
             self._add_log("SUCCESS", f"Sanal makine '{name}' üzerinde '{action}' işlemi uygulandı.")
             return f"Action '{action}' executed successfully on VM '{name}' (Mock)"
+
+        if action == "rebuild":
+            # Rebuild implementation: stop VM, recreate storage from template distributions, start VM
+            try:
+                self._run_secure_cmd(["/usr/bin/virsh", "destroy", name])
+            except Exception:
+                pass
+            
+            vm = self.get_vm_details(name, "shut off")
+            os_template = vm.os_template or "ubuntu-22.04"
+            
+            # Find backing image details or storage type
+            disk_path = f"{LIBVIRT_IMAGES_DIR}/{name}.qcow2"
+            template_img = f"{LIBVIRT_IMAGES_DIR}/templates/{os_template}.qcow2"
+            
+            if os.path.exists(template_img):
+                if os.path.exists(disk_path):
+                    self._run_secure_cmd(["/usr/bin/qemu-img", "create", "-f", "qcow2", "-b", template_img, "-F", "qcow2", disk_path])
+                    self._run_secure_cmd(["/usr/bin/qemu-img", "resize", disk_path, f"{vm.disk_gb}G"])
+            
+            self._run_secure_cmd(["/usr/bin/virsh", "start", name])
+            self._add_log("SUCCESS", f"Sanal makine '{name}' başarıyla yeniden kuruldu (rebuilt).")
+            return f"VM '{name}' successfully rebuilt from template."
 
         virsh_action = {
             "start": "start",
@@ -849,6 +875,16 @@ class VMManager:
         self._sanitize_name(vm_name)
         self._sanitize_name(snap_name)
         if IS_MOCK:
+            db = self._read_mock_db()
+            if vm_name in db:
+                if "snapshots" not in db[vm_name]:
+                    db[vm_name]["snapshots"] = []
+                db[vm_name]["snapshots"].append({
+                    "name": snap_name,
+                    "description": desc or "Manual Snapshot",
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+                self._write_mock_db(db)
             self._add_log("SUCCESS", f"Sanal makine '{vm_name}' için '{snap_name}' anlık görüntüsü (snapshot) oluşturuldu.")
             return f"Snapshot '{snap_name}' created (Mock)"
         cmd = [
@@ -858,6 +894,41 @@ class VMManager:
         self._run_secure_cmd(cmd)
         self._add_log("SUCCESS", f"Sanal makine '{vm_name}' üzerinde '{snap_name}' anlık görüntüsü alındı.")
         return f"Snapshot '{snap_name}' created successfully"
+
+    def list_snapshots(self, vm_name: str) -> List[Dict[str, Any]]:
+        self._sanitize_name(vm_name)
+        if IS_MOCK:
+            db = self._read_mock_db()
+            if vm_name in db:
+                return db[vm_name].get("snapshots", [
+                    {
+                        "name": "snap-setup-completed",
+                        "description": "Otomatik ilk kurulum yedegi",
+                        "timestamp": "2026-06-22 12:45:10"
+                    }
+                ])
+            return []
+
+        try:
+            res = self._run_secure_cmd(["/usr/bin/virsh", "snapshot-list", vm_name])
+            lines = res.stdout.strip().split("\n")
+            snaps = []
+            if len(lines) > 2:
+                for line in lines[2:]:
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        name = parts[0]
+                        time_str = " ".join(parts[1:-1])
+                        state = parts[-1]
+                        snaps.append({
+                            "name": name,
+                            "description": f"State: {state}",
+                            "timestamp": time_str
+                        })
+            return snaps
+        except Exception as e:
+            print(f"Error listing snapshots for {vm_name}: {e}")
+            return []
 
     def revert_snapshot(self, vm_name: str, snap_name: str) -> str:
         self._sanitize_name(vm_name)

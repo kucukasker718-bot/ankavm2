@@ -29,11 +29,43 @@
 </head>
 <body class="bg-[#0b0f19] min-h-screen flex flex-col text-slate-300" x-data="vmPanel">
 
-    <!-- Global Licensing Warning Banner -->
-    <div x-show="!licenseStatus.is_licensed" class="bg-red-600 text-white text-xs py-2 px-4 text-center font-semibold font-mono tracking-wider w-full sticky top-0 z-50 flex items-center justify-center space-x-2">
-        <i class="fa-solid fa-triangle-exclamation animate-bounce"></i>
-        <span>LİSANS UYARISI: Bu hypervisor düğümünün lisansı doğrulanmadı veya süresi doldu! Sunucu kilitlendi.</span>
-        <button @click="setTab('license')" class="underline ml-2 font-bold hover:text-slate-200">Lisansı Güncelle / Doğrula</button>
+    <!-- Glassmorphic Full Screen License Key Entry Overlay -->
+    <div x-show="!licenseStatus.is_licensed" class="fixed inset-0 bg-[#070a13]/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
+        <div class="bg-[#111827]/80 border border-red-500/30 rounded-2xl p-8 max-w-md w-full shadow-2xl space-y-6 text-center">
+            <div class="w-16 h-16 rounded-full bg-red-500/10 border border-red-500/20 mx-auto flex items-center justify-center text-red-500 animate-pulse">
+                <i class="fa-solid fa-key text-2xl"></i>
+            </div>
+            <div class="space-y-2">
+                <h2 class="text-xl font-bold text-white tracking-wide">Lisans Doğrulaması Gerekli</h2>
+                <p class="text-xs text-slate-400">AnkaVM SaaS Virtualization Platformu'nu kullanmak için geçerli bir lisans anahtarı giriniz.</p>
+            </div>
+            
+            <div class="bg-slate-900/60 p-4 rounded-xl border border-slate-800 text-xs font-mono space-y-2 text-left">
+                <div class="flex justify-between">
+                    <span class="text-slate-500">Cihaz Hardware ID:</span>
+                    <span x-text="licenseStatus.hardware_id" class="text-brand-500 font-bold select-all"></span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-slate-500">Düğüm IP'si:</span>
+                    <span x-text="licenseStatus.allowed_ip || 'Doğrulanıyor...'" class="text-slate-300"></span>
+                </div>
+            </div>
+
+            <form @submit.prevent="updateLicense()" class="space-y-4 text-left">
+                <div class="space-y-1.5">
+                    <label class="text-[10px] uppercase font-bold text-slate-400 font-mono">Lisans Anahtarı</label>
+                    <input type="text" x-model="licenseKeyInput" required placeholder="ANKAVM-PRO-XXXX-XXXX" 
+                           class="w-full px-4 py-3 bg-slate-950/80 border border-slate-800 focus:border-brand-500 focus:outline-none rounded-xl text-white font-mono text-xs text-center tracking-widest placeholder-slate-700"/>
+                </div>
+                <button type="submit" class="w-full bg-brand-500 hover:bg-brand-600 transition duration-200 text-white text-xs font-bold py-3 rounded-xl shadow-lg shadow-brand-500/20 flex items-center justify-center space-x-2">
+                    <i class="fa-solid fa-circle-check"></i>
+                    <span>Lisansı Etkinleştir</span>
+                </button>
+            </form>
+            <div class="text-[10px] text-slate-500 leading-normal">
+                Geliştirici Trial Lisansı: <span class="text-slate-400 font-mono select-all font-bold">ANKAVM-TRIAL-KEY-2026</span>
+            </div>
+        </div>
     </div>
 
     <!-- Page Body Wrapper -->
@@ -226,11 +258,12 @@
                                                     <!-- Proxmox Progress Bar Rendered dynamically -->
                                                     <td class="py-2.5 px-3" x-html="renderProxmoxProgressBar(vm.disk_used_gb || 2.0, vm.disk_gb)"></td>
                                                     <td class="py-2.5 px-3 text-slate-300" x-text="vm.ip_address"></td>
-                                                    <td class="py-2.5 px-3 text-right" @click.stop>
-                                                        <button x-show="vm.status !== 'running'" @click="triggerAction(vm.name, 'start')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-emerald-400"><i class="fa-solid fa-play text-[9px]"></i></button>
-                                                        <button x-show="vm.status === 'running'" @click="triggerAction(vm.name, 'stop')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-red-400"><i class="fa-solid fa-stop text-[9px]"></i></button>
-                                                        <button @click="openConsole(vm.name)" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-brand-500"><i class="fa-solid fa-terminal text-[9px]"></i></button>
-                                                        <button @click="deleteVm(vm.name)" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-red-500"><i class="fa-solid fa-trash-can text-[9px]"></i></button>
+                                                    <td class="py-2.5 px-3 text-right space-x-1" @click.stop>
+                                                        <button x-show="vm.status !== 'running'" @click="triggerAction(vm.name, 'start')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-emerald-400 hover:text-emerald-300" title="Sunucuyu Başlat"><i class="fa-solid fa-play text-[9px]"></i></button>
+                                                        <button x-show="vm.status === 'running'" @click="triggerAction(vm.name, 'stop')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-red-400 hover:text-red-300" title="Sunucuyu Durdur"><i class="fa-solid fa-stop text-[9px]"></i></button>
+                                                        <button @click="if(confirm('Sunucuyu yeniden kurmak istediğinizden emin misiniz?')) triggerAction(vm.name, 'rebuild')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-amber-500 hover:text-amber-300" title="Sunucuyu Yeniden Kur"><i class="fa-solid fa-rotate text-[9px]"></i></button>
+                                                        <button @click="openConsole(vm.name)" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-brand-500 hover:text-brand-300" title="Konsol Bağlantısı"><i class="fa-solid fa-terminal text-[9px]"></i></button>
+                                                        <button @click="deleteVm(vm.name)" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-red-500 hover:text-red-300" title="Sunucuyu Tamamen Sil"><i class="fa-solid fa-trash-can text-[9px]"></i></button>
                                                     </td>
                                                 </tr>
                                             </template>
@@ -242,6 +275,84 @@
 
                         <!-- VDS Inspector Panels -->
                         <div class="space-y-5">
+                            <!-- VDS Kontrol Merkezi (Advanced Actions) -->
+                            <div class="corp-card rounded-lg p-5 space-y-4" x-show="selectedVmName">
+                                <div class="flex justify-between items-center">
+                                    <h3 class="text-xs font-bold uppercase text-white" x-text="`VDS: ${selectedVmName}`"></h3>
+                                    <span class="text-[10px] px-2 py-0.5 rounded font-mono font-bold" 
+                                          :class="vms.find(v => v.name === selectedVmName)?.status === 'running' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'"
+                                          x-text="vms.find(v => v.name === selectedVmName)?.status === 'running' ? 'AKTİF' : 'KAPALI'"></span>
+                                </div>
+                                <div class="grid grid-cols-2 gap-2 text-center text-[10px] font-semibold">
+                                    <button @click="triggerAction(selectedVmName, 'start')" 
+                                            :disabled="vms.find(v => v.name === selectedVmName)?.status === 'running'"
+                                            class="p-2.5 rounded bg-slate-900 border border-slate-800 text-emerald-400 hover:bg-emerald-500 hover:text-white disabled:opacity-50 disabled:hover:bg-slate-900 disabled:hover:text-emerald-400 transition flex flex-col items-center justify-center space-y-1">
+                                        <i class="fa-solid fa-play text-sm"></i>
+                                        <span>Başlat</span>
+                                    </button>
+                                    <button @click="triggerAction(selectedVmName, 'stop')" 
+                                            :disabled="vms.find(v => v.name === selectedVmName)?.status !== 'running'"
+                                            class="p-2.5 rounded bg-slate-900 border border-slate-800 text-red-400 hover:bg-red-500 hover:text-white disabled:opacity-50 disabled:hover:bg-slate-900 disabled:hover:text-red-400 transition flex flex-col items-center justify-center space-y-1">
+                                        <i class="fa-solid fa-stop text-sm"></i>
+                                        <span>Durdur</span>
+                                    </button>
+                                    <button @click="triggerAction(selectedVmName, 'restart')" 
+                                            :disabled="vms.find(v => v.name === selectedVmName)?.status !== 'running'"
+                                            class="p-2.5 rounded bg-slate-900 border border-slate-800 text-brand-500 hover:bg-brand-500 hover:text-white disabled:opacity-50 disabled:hover:bg-slate-900 disabled:hover:text-brand-500 transition flex flex-col items-center justify-center space-y-1">
+                                        <i class="fa-solid fa-arrows-rotate text-sm"></i>
+                                        <span>Yeniden Başlat</span>
+                                    </button>
+                                    <button @click="if (confirm('Bu sunucuyu sıfırlayıp yeniden kurmak istediğinizden emin misiniz? Tüm disk verileriniz silinecektir!')) triggerAction(selectedVmName, 'rebuild')" 
+                                            class="p-2.5 rounded bg-slate-900 border border-slate-800 text-amber-400 hover:bg-amber-500 hover:text-white transition flex flex-col items-center justify-center space-y-1">
+                                        <i class="fa-solid fa-rotate-right text-sm"></i>
+                                        <span>Yeniden Kur</span>
+                                    </button>
+                                    <button @click="openConsole(selectedVmName)" 
+                                            class="col-span-2 p-2.5 rounded bg-brand-500/10 border border-brand-500/20 text-brand-400 hover:bg-brand-500 hover:text-white transition flex items-center justify-center space-x-2">
+                                        <i class="fa-solid fa-display text-xs"></i>
+                                        <span class="text-[10px] font-bold">VNC / Grafik Konsolu Aç</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Snapshot & Yedekleme Paneli -->
+                            <div class="corp-card rounded-lg p-5 space-y-4" x-show="selectedVmName">
+                                <h3 class="text-xs font-bold uppercase text-white flex items-center space-x-1.5">
+                                    <i class="fa-solid fa-camera"></i>
+                                    <span>Snapshot & Yedekleme</span>
+                                </h3>
+                                
+                                <form @submit.prevent="createSnapshot()" class="space-y-2 font-mono text-[10px]">
+                                    <div class="flex space-x-2">
+                                        <input type="text" x-model="snapshotForm.name" required placeholder="Yedek Adı (Örn: snap1)" 
+                                               class="flex-1 p-2 bg-slate-950 border border-slate-800 rounded focus:outline-none focus:border-brand-500 text-white text-xs"/>
+                                        <button type="submit" class="px-3 bg-brand-500 hover:bg-brand-600 rounded text-white font-sans font-bold">Yedek Al</button>
+                                    </div>
+                                    <input type="text" x-model="snapshotForm.description" placeholder="Açıklama girin..." 
+                                           class="w-full p-2 bg-slate-950 border border-slate-800 rounded focus:outline-none focus:border-brand-500 text-white text-[10px]"/>
+                                </form>
+
+                                <div class="space-y-1.5 max-h-48 overflow-y-auto">
+                                    <div class="text-[9px] uppercase font-bold text-slate-500 tracking-wider">Mevcut Snapshot Noktaları</div>
+                                    <template x-if="selectedVmSnapshots.length === 0">
+                                        <div class="text-[10px] text-slate-600 text-center py-2 italic bg-slate-950/20 border border-slate-900 rounded">Alınmış yedek bulunmuyor.</div>
+                                    </template>
+                                    <template x-for="snap in selectedVmSnapshots">
+                                        <div class="bg-slate-950/60 p-2.5 rounded border border-slate-900 flex justify-between items-center text-[10px] font-mono">
+                                            <div class="space-y-0.5">
+                                                <div class="font-bold text-white" x-text="snap.name"></div>
+                                                <div class="text-[9px] text-slate-400" x-text="snap.description"></div>
+                                                <div class="text-[8px] text-slate-600" x-text="snap.timestamp"></div>
+                                            </div>
+                                            <button @click="revertSnapshot(snap.name)" 
+                                                    class="px-2 py-1 rounded bg-brand-500/10 hover:bg-brand-500 text-brand-400 hover:text-white font-sans font-bold text-[9px] transition">
+                                                Geri Yükle
+                                            </button>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+
                             <!-- Telemetry Chart -->
                             <div class="corp-card rounded-lg p-5">
                                 <h2 class="text-xs font-bold uppercase mb-3">VDS Canlı Kaynak Telemetrisi</h2>
@@ -442,31 +553,67 @@
 
                     <!-- 6. SETTINGS & WiseCP TAB -->
                     <div x-show="activeTab === 'settings'" x-cloak class="space-y-6">
-                        <div class="corp-card rounded-lg p-5 space-y-4">
-                            <h2 class="text-xs font-bold uppercase text-white">WiseCP & WHMCS Entegrasyon Modülü</h2>
-                            <p class="text-xs text-slate-400 font-sans">Otomatik VM dağıtımı (Deployment) ve VDS kontrol modülünün PHP dosyalarını aşağıdaki dizine kurarak faturalandırmayı entegre edebilirsiniz:</p>
-                            <div class="bg-slate-900 p-2 rounded border border-slate-800 font-mono text-[10px] text-brand-500">/cpanel/modules/Servers/AnkaVM/AnkaVM.php</div>
-                            <div class="flex justify-between items-center"><span class="text-[10px] text-slate-500">Modül Kod Bloğu:</span><button @click="navigator.clipboard.writeText(document.getElementById('php-module-code').innerText); showToast('WiseCP Modül Kodu kopyalandı!', 'success')" class="px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-[10px] text-brand-500">Kopyala</button></div>
-                            <pre class="bg-slate-950 p-3 rounded border border-slate-800 font-mono text-[10px] max-h-48 overflow-y-auto text-slate-300" id="php-module-code">
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <!-- Left: Setup and code -->
+                            <div class="lg:col-span-2 corp-card rounded-lg p-5 space-y-4">
+                                <div class="flex justify-between items-center">
+                                    <h2 class="text-xs font-bold uppercase text-white flex items-center space-x-1.5">
+                                        <i class="fa-solid fa-square-rss text-brand-500"></i>
+                                        <span>WiseCP & WHMCS Otomasyon Modülü</span>
+                                    </h2>
+                                    <button @click="showWiseCpSimulateModal = true" class="btn-primary text-xs font-semibold py-1.5 px-3 rounded">Sipariş Simülatörü Aç</button>
+                                </div>
+                                <p class="text-xs text-slate-400 font-sans">Otomatik VM dağıtımı (Deployment) ve VDS kontrol modülünün PHP dosyalarını aşağıdaki dizine kurarak faturalandırmayı entegre edebilirsiniz:</p>
+                                <div class="bg-slate-900 p-2 rounded border border-slate-800 font-mono text-[10px] text-brand-500">/cpanel/modules/Servers/AnkaVM/AnkaVM.php</div>
+                                <div class="flex justify-between items-center"><span class="text-[10px] text-slate-500">Modül Kod Bloğu:</span><button @click="navigator.clipboard.writeText(document.getElementById('php-module-code').innerText); showToast('WiseCP Modül Kodu kopyalandı!', 'success')" class="px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-[10px] text-brand-500">Kopyala</button></div>
+                                <pre class="bg-slate-950 p-3 rounded border border-slate-800 font-mono text-[10px] max-h-48 overflow-y-auto text-slate-300" id="php-module-code">
 &lt;?php
 class AnkaVM {
-    private $apiUrl;
-    private $apiKey;
-    public function __construct($apiUrl, $apiKey) {
-        $this->apiUrl = rtrim($apiUrl, '/');
-        $this->apiKey = $apiKey;
-    }
+    private $apiUrl = "http://your-server-ip:8086";
+    private $apiKey = "ankavm-secure-dev-token-2026";
+    
     public function createServer($vmName, $cpu, $ram, $disk, $template, $rootPassword) {
         return $this->call('/api/wisecp/deploy', 'POST', [
             'order_id' => 'ws-order-'.rand(1000,9999),
             'product_id' => 'saas-prod',
             'name' => $vmName, 'cpu' => $cpu, 'ram_mb' => $ram, 'disk_gb' => $disk,
-            'disk_pool' => 'vg_ankavm_fast',
+            'disk_pool' => 'default-dir',
             'os_template' => $template, 'root_password' => $rootPassword,
             'callback_url' => 'http://yoursite.com/callback'
         ]);
     }
 }</pre>
+                            </div>
+
+                            <!-- Right: WiseCP Orders list -->
+                            <div class="corp-card rounded-lg p-5 space-y-4">
+                                <h3 class="text-xs font-bold uppercase text-white flex items-center space-x-1.5">
+                                    <i class="fa-solid fa-list-check text-emerald-400"></i>
+                                    <span>WiseCP Sipariş Geçmişi</span>
+                                </h3>
+                                <div class="space-y-3 max-h-96 overflow-y-auto font-mono text-[10px]">
+                                    <template x-for="order in wiseCpOrders" :key="order.order_id">
+                                        <div class="p-3 bg-slate-900/60 rounded border border-slate-800 space-y-2">
+                                            <div class="flex justify-between items-center font-bold">
+                                                <span x-text="order.order_id" class="text-white"></span>
+                                                <span :class="{
+                                                    'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30': order.status === 'COMPLETED',
+                                                    'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse': order.status === 'PROVISIONING',
+                                                    'bg-red-500/20 text-red-400 border border-red-500/30': order.status === 'FAILED'
+                                                }" class="px-1.5 py-0.5 rounded text-[8px] font-bold" x-text="order.status"></span>
+                                            </div>
+                                            <div class="space-y-0.5 text-slate-400 text-[9px]">
+                                                <div x-text="`VDS Adı: ${order.name}`"></div>
+                                                <div x-text="`Ürün ID: ${order.product_id}`"></div>
+                                                <div x-text="`CPU: ${order.cpu} / RAM: ${order.ram_mb}MB / Disk: ${order.disk_gb}G`"></div>
+                                                <div x-show="order.ip_address" x-text="`Atanan IP: ${order.ip_address}`" class="text-brand-500 font-bold"></div>
+                                                <div x-show="order.error" x-text="`Hata: ${order.error}`" class="text-red-400 font-bold"></div>
+                                            </div>
+                                            <div class="text-[8px] text-slate-500 text-right" x-text="order.created_at"></div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -525,14 +672,113 @@ class AnkaVM {
         </div>
     </div>
 
-    <!-- Terminal Modal -->
+    <!-- WiseCP Simulation Modal -->
+    <div x-show="showWiseCpSimulateModal" class="fixed inset-0 bg-black/75 z-50 flex items-center justify-center p-4">
+        <div @click.away="showWiseCpSimulateModal = false" class="corp-card w-full max-w-md rounded-lg overflow-hidden p-5 space-y-4 bg-[#111827] border border-slate-800">
+            <h2 class="text-xs font-bold text-white uppercase tracking-wider flex items-center space-x-1.5">
+                <i class="fa-solid fa-flask text-amber-500"></i>
+                <span>WiseCP Sipariş Simülatörü</span>
+            </h2>
+            <p class="text-[11px] text-slate-400 font-sans leading-relaxed">Bu arayüz, WiseCP modülünün API aracılığıyla hypervisor düğümünüze göndereceği "Yeni Sunucu Oluştur" (CreateServer) çağrısını birebir simüle etmenizi sağlar.</p>
+            <form @submit.prevent="simulateWiseCpOrder" class="space-y-3 font-mono text-xs">
+                <div class="space-y-1">
+                    <label class="text-[9px] text-slate-500 uppercase">Sipariş ID (Boş bırakılırsa otomatik üretilir):</label>
+                    <input type="text" x-model="wiseCpSimulateForm.order_id" placeholder="Örn: ws-order-9823" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white focus:outline-none focus:border-brand-500"/>
+                </div>
+                <div class="space-y-1">
+                    <label class="text-[9px] text-slate-500 uppercase">Sunucu Adı (Hostname):</label>
+                    <input type="text" x-model="wiseCpSimulateForm.name" required placeholder="Sunucu adı" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white focus:outline-none focus:border-brand-500"/>
+                </div>
+                <div class="space-y-1">
+                    <label class="text-[9px] text-slate-500 uppercase">İşletim Sistemi Şablonu:</label>
+                    <select x-model="wiseCpSimulateForm.os_template" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-mono focus:outline-none focus:border-brand-500">
+                        <option value="ubuntu-22.04">Ubuntu 22.04 LTS</option>
+                        <option value="debian-12">Debian 12 Bookworm</option>
+                    </select>
+                </div>
+                <div class="grid grid-cols-3 gap-2">
+                    <div class="space-y-1">
+                        <label class="text-[9px] text-slate-500 uppercase">CPU:</label>
+                        <select x-model.number="wiseCpSimulateForm.cpu" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-mono focus:outline-none focus:border-brand-500">
+                            <option value="1">1 Core</option>
+                            <option value="2">2 Cores</option>
+                            <option value="4">4 Cores</option>
+                        </select>
+                    </div>
+                    <div class="space-y-1">
+                        <label class="text-[9px] text-slate-500 uppercase">RAM:</label>
+                        <select x-model.number="wiseCpSimulateForm.ram_mb" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-mono focus:outline-none focus:border-brand-500">
+                            <option value="1024">1 GB</option>
+                            <option value="2048">2 GB</option>
+                            <option value="4096">4 GB</option>
+                            <option value="8192">8 GB</option>
+                        </select>
+                    </div>
+                    <div class="space-y-1">
+                        <label class="text-[9px] text-slate-500 uppercase">Disk:</label>
+                        <select x-model.number="wiseCpSimulateForm.disk_gb" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-mono focus:outline-none focus:border-brand-500">
+                            <option value="20">20 GB</option>
+                            <option value="40">40 GB</option>
+                            <option value="80">80 GB</option>
+                            <option value="160">160 GB</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="space-y-1">
+                    <label class="text-[9px] text-slate-500 uppercase">Kök Şifresi (Root Password):</label>
+                    <input type="text" x-model="wiseCpSimulateForm.root_password" required placeholder="Geçici Şifre" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white focus:outline-none focus:border-brand-500"/>
+                </div>
+                <div class="flex justify-end space-x-2 pt-2">
+                    <button type="button" @click="showWiseCpSimulateModal = false" class="px-3 py-1.5 text-slate-400 font-sans">İptal</button>
+                    <button type="submit" class="btn-primary px-4 py-1.5 rounded font-sans font-bold text-white">API Siparişini Tetikle</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Terminal & VNC Modal -->
     <div x-show="showConsoleModal" class="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4">
-        <div class="corp-card w-full max-w-2xl rounded-lg overflow-hidden" @click.away="closeConsole()">
-            <div class="border-b border-slate-800 p-3 bg-[#111827] flex justify-between items-center">
-                <span class="text-xs font-bold text-slate-300">KVM SERİ KONSOL</span>
-                <button @click="closeConsole()"><i class="fa-solid fa-xmark text-slate-400 hover:text-white"></i></button>
+        <div class="corp-card w-full max-w-3xl rounded-xl overflow-hidden shadow-2xl border border-slate-800" @click.away="closeConsole()">
+            <!-- Tab Headers -->
+            <div class="border-b border-slate-800 bg-[#111827] px-4 py-2 flex justify-between items-center">
+                <div class="flex space-x-2 text-xs font-semibold">
+                    <button @click="consoleTab = 'vnc'; startVncSimulation(selectedVmName)" 
+                            :class="consoleTab === 'vnc' ? 'bg-brand-500/20 text-brand-400 border border-brand-500/30' : 'text-slate-400 hover:text-white'" 
+                            class="px-3 py-1.5 rounded transition flex items-center space-x-1">
+                        <i class="fa-solid fa-desktop"></i>
+                        <span>Web VNC Ekranı (Grafik)</span>
+                    </button>
+                    <button @click="consoleTab = 'serial'; $nextTick(() => initTerminal(selectedVmName))" 
+                            :class="consoleTab === 'serial' ? 'bg-brand-500/20 text-brand-400 border border-brand-500/30' : 'text-slate-400 hover:text-white'" 
+                            class="px-3 py-1.5 rounded transition flex items-center space-x-1">
+                        <i class="fa-solid fa-terminal"></i>
+                        <span>Seri Konsol (SSH)</span>
+                    </button>
+                </div>
+                <button @click="closeConsole()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-sm"></i></button>
             </div>
-            <div class="p-4 bg-[#070a13]"><div id="terminal-container" class="w-full"></div></div>
+            
+            <!-- VNC Simulation Panel -->
+            <div x-show="consoleTab === 'vnc'" class="p-6 bg-[#070a13] space-y-4">
+                <div class="flex justify-between items-center text-xs">
+                    <div class="text-slate-500 font-mono" x-text="`VNC Adresi: ws://${window.location.host}/ws/vms/${selectedVmName}/vnc`"></div>
+                    <div class="flex space-x-2">
+                        <button @click="sendCtrlAltDel(selectedVmName)" class="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:bg-slate-800 text-[10px] text-brand-400 font-mono rounded font-bold">Ctrl+Alt+Del Gönder</button>
+                        <button @click="triggerAction(selectedVmName, 'restart'); startVncSimulation(selectedVmName)" class="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:bg-slate-800 text-[10px] text-amber-500 font-mono rounded font-bold">Sert Yeniden Başlat</button>
+                    </div>
+                </div>
+                
+                <!-- Display Mock screen output -->
+                <div class="relative w-full aspect-video max-w-full bg-black rounded-lg border border-slate-800/80 overflow-hidden flex flex-col p-4 font-mono text-xs text-brand-500 leading-relaxed overflow-y-auto max-h-96 select-text whitespace-pre-wrap">
+                    <!-- Boot sequence content -->
+                    <div class="flex-1" x-text="vncCanvasContent"></div>
+                </div>
+            </div>
+
+            <!-- Serial Console xterm -->
+            <div x-show="consoleTab === 'serial'" class="p-4 bg-[#070a13]">
+                <div id="terminal-container" class="w-full"></div>
+            </div>
         </div>
     </div>
 

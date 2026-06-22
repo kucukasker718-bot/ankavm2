@@ -19,6 +19,12 @@ document.addEventListener('alpine:init', () => {
         ipPools: [],
         ipLeases: [],
         ipamLogs: [],
+        wiseCpOrders: [],
+        selectedVmSnapshots: [],
+        consoleTab: 'vnc', // 'vnc' or 'serial'
+        vncConnected: false,
+        vncBootState: 0, // 0: offline, 1: booting bios, 2: kernel load, 3: fully loaded shell
+        
         licenseStatus: {
             is_licensed: false,
             owner_name: 'Sistem Yükleniyor...',
@@ -65,6 +71,7 @@ document.addEventListener('alpine:init', () => {
         showCreateNetModal: false,
         showCreatePoolModal: false,
         showConsoleModal: false,
+        showWiseCpSimulateModal: false,
         licenseKeyInput: '',
         
         // Provisioning forms
@@ -92,17 +99,34 @@ document.addEventListener('alpine:init', () => {
             dns_primary: '8.8.8.8',
             dns_secondary: '1.1.1.1'
         },
-
+        snapshotForm: {
+            name: '',
+            description: 'Manuel Yedekleme'
+        },
+        wiseCpSimulateForm: {
+            order_id: '',
+            product_id: 'vds-custom-saas',
+            name: 'ws-demo-vds',
+            cpu: 2,
+            ram_mb: 4096,
+            disk_gb: 80,
+            disk_pool: 'default-dir',
+            os_template: 'ubuntu-22.04',
+            root_password: 'WiseCPPassWord123!'
+        },
+ 
         // Charts
         hostCpuChart: null,
         hostRamChart: null,
         hostDiskChart: null,
         vmPerformanceChart: null,
-
+ 
         // Websockets console
         wsConsole: null,
         termInstance: null,
-
+        vncSimulationTimer: null,
+        vncCanvasContent: '',
+ 
         async init() {
             console.log("Initializing Corporate SaaS Dashboard Controller with Watchdog & Licensing...");
             
@@ -117,7 +141,8 @@ document.addEventListener('alpine:init', () => {
                 this.fetchStorage(),
                 this.fetchLogs(),
                 this.fetchIpamData(),
-                this.fetchIpLogs()
+                this.fetchIpLogs(),
+                this.fetchWiseCpOrders()
             ]);
             
             this.loading = false;
@@ -128,7 +153,7 @@ document.addEventListener('alpine:init', () => {
                 this.initHostCharts();
                 this.renderApexStorageCharts();
             });
-
+ 
             // Set up timers for data sync
             setInterval(() => this.fetchHostStats(), 4000);
             setInterval(() => this.fetchVms(), 5000);
@@ -136,6 +161,7 @@ document.addEventListener('alpine:init', () => {
             setInterval(() => this.fetchActiveVmTraffic(), 3000);
             setInterval(() => this.fetchLogs(), 6000);
             setInterval(() => this.fetchLicenseStatus(), 15000);
+            setInterval(() => this.fetchWiseCpOrders(), 5000);
             setInterval(() => {
                 if (this.activeTab === 'networks') this.fetchNetworks();
                 if (this.activeTab === 'storage') this.fetchStorage();
@@ -144,7 +170,7 @@ document.addEventListener('alpine:init', () => {
                     this.fetchIpLogs();
                 }
             }, 8000);
-        },
+        },,
 
         setTab(tabName) {
             this.activeTab = tabName;
@@ -337,16 +363,19 @@ document.addEventListener('alpine:init', () => {
                 this.selectedVmName = null;
                 this.selectedVmTelemetry = null;
                 this.selectedVmTraffic = null;
+                this.selectedVmSnapshots = [];
                 this.telemetryHistory = { cpu: [], ram: [], timestamps: [] };
                 return;
             }
             this.selectedVmName = name;
+            this.selectedVmSnapshots = [];
             this.telemetryHistory = { cpu: [], ram: [], timestamps: [] };
             
             this.$nextTick(() => {
                 this.initVmPerformanceChart();
                 this.fetchActiveVmTelemetry();
                 this.fetchActiveVmTraffic();
+                this.fetchVmSnapshots(name);
             });
         },
 
@@ -717,6 +746,144 @@ document.addEventListener('alpine:init', () => {
                 this.sortBy = field;
                 this.sortDesc = false;
             }
+        },
+
+        // --- WiseCP & Snapshots & VNC Console Operations ---
+
+        async fetchWiseCpOrders() {
+            try {
+                const res = await fetch(`${API_BASE}/wisecp/orders`, { headers: API_HEADERS });
+                if (res.ok) this.wiseCpOrders = await res.json();
+            } catch (err) {
+                console.error("WiseCP orders fetch failure", err);
+            }
+        },
+
+        async fetchVmSnapshots(vmName) {
+            if (!vmName) return;
+            try {
+                const res = await fetch(`${API_BASE}/vms/${vmName}/snapshots`, { headers: API_HEADERS });
+                if (res.ok) {
+                    this.selectedVmSnapshots = await res.json();
+                }
+            } catch (err) {
+                console.error("Snapshots fetch failure", err);
+            }
+        },
+
+        async createSnapshot() {
+            if (!this.selectedVmName) return;
+            if (!this.snapshotForm.name) {
+                this.showToast("Lütfen bir snapshot adı girin.", "warning");
+                return;
+            }
+            this.showToast(`Snapshot alınıyor: ${this.snapshotForm.name}`, "info");
+            try {
+                const res = await fetch(`${API_BASE}/vms/${this.selectedVmName}/snapshots`, {
+                    method: 'POST',
+                    headers: API_HEADERS,
+                    body: JSON.stringify({
+                        snapshot_name: this.snapshotForm.name,
+                        description: this.snapshotForm.description
+                    })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    this.showToast(data.message, "success");
+                    this.snapshotForm.name = '';
+                    await this.fetchVmSnapshots(this.selectedVmName);
+                } else {
+                    throw new Error(data.detail);
+                }
+            } catch (err) {
+                this.showToast(err.message, "error");
+            }
+        },
+
+        async revertSnapshot(snapName) {
+            if (!this.selectedVmName || !snapName) return;
+            if (!confirm(`DİKKAT: Sunucuyu '${snapName}' anlık görüntüsüne geri döndürmek istediğinizden emin misiniz?\nGeçerli tüm kaydedilmemiş veriler kaybolacaktır.`)) {
+                return;
+            }
+            this.showToast(`Snapshot geri yükleniyor: ${snapName}`, "info");
+            try {
+                const res = await fetch(`${API_BASE}/vms/${this.selectedVmName}/snapshots/revert`, {
+                    method: 'POST',
+                    headers: API_HEADERS,
+                    body: JSON.stringify({ snapshot_name: snapName })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    this.showToast(data.message, "success");
+                    await this.fetchVms();
+                } else {
+                    throw new Error(data.detail);
+                }
+            } catch (err) {
+                this.showToast(err.message, "error");
+            }
+        },
+
+        async simulateWiseCpOrder() {
+            this.showToast("WiseCP Sipariş talebi gönderiliyor...", "info");
+            this.showWiseCpSimulateModal = false;
+            
+            // Auto generate an order_id if empty
+            if (!this.wiseCpSimulateForm.order_id) {
+                this.wiseCpSimulateForm.order_id = 'ws-order-' + Math.floor(1000 + Math.random() * 9000);
+            }
+            
+            try {
+                const res = await fetch(`${API_BASE}/wisecp/deploy`, {
+                    method: 'POST',
+                    headers: API_HEADERS,
+                    body: JSON.stringify(this.wiseCpSimulateForm)
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    this.showToast("Sipariş WiseCP API kuyruğuna alındı ve arka planda kurulum başladı!", "success");
+                    this.wiseCpSimulateForm.order_id = '';
+                    await this.fetchWiseCpOrders();
+                } else {
+                    throw new Error(data.detail);
+                }
+            } catch (err) {
+                this.showToast(err.message, "error");
+            }
+        },
+
+        // VNC Simulation Console helper
+        startVncSimulation(vmName) {
+            if (this.vncSimulationTimer) clearInterval(this.vncSimulationTimer);
+            this.vncBootState = 1;
+            this.vncConnected = false;
+            this.vncCanvasContent = "Bağlanıyor...";
+            
+            setTimeout(() => {
+                this.vncConnected = true;
+                this.vncBootState = 1;
+                this.vncCanvasContent = `AnkaVM Virtual VNC v1.5\r\nBIOS v1.5 Initializing...\r\nCPU: AMD EPYC Core / Intel Xeon @ 2.20GHz\r\nRAM: 4096 MB OK\r\nHard Disk: /dev/vda (QCOW2 Block Store)\r\nBooting Linux image...`;
+            }, 1000);
+
+            this.vncSimulationTimer = setInterval(() => {
+                if (this.vncBootState === 1) {
+                    this.vncBootState = 2;
+                    this.vncCanvasContent = `[    0.000000] Booting Linux kernel on physical CPU 0x0\r\n[    0.000000] Linux version 5.15.0-88-generic\r\n[    0.052021] CPU0: Intel(R) Xeon(R) Gold\r\n[    1.218903] ACPI: Core revision 20210604\r\n[    2.148102] ext4-fs (vda): mounted filesystem with ordered data mode.\r\n[    3.029810] systemd[1]: Started Journal Service.\r\n[    3.901021] systemd[1]: Started AnkaVM Guest Telemetry Agent.\r\n[    4.208102] systemd[1]: Reached target Multi-User System.`;
+                } else if (this.vncBootState === 2) {
+                    this.vncBootState = 3;
+                    const activeVm = this.vms.find(v => v.name === vmName);
+                    const ip = activeVm ? activeVm.ip_address : '192.168.122.100';
+                    const ram = activeVm ? activeVm.ram_mb : 2048;
+                    const cpu = activeVm ? activeVm.cpu : 2;
+                    this.vncCanvasContent = `Ubuntu 22.04 LTS ${vmName} tty1\r\n\r\n${vmName} login: root\r\nPassword: \r\nLast login: Mon Jun 22 21:20:56 2026 on tty1\r\n\r\nWelcome to Ubuntu 22.04 LTS (GNU/Linux 5.15.0-88-generic x86_64)\r\n\r\nSystem information:\r\n  System load:  0.08              Processes:             98\r\n  Usage of /:   12.4% of 38.21GB  Memory usage:          12%\r\n  VDS IP Address:                 ${ip}\r\n  VDS Core Config:                ${cpu} Cores / ${ram} MB RAM\r\n\r\n* AnkaVM hypervisor guest agents operational.\r\n* VNC graphics desktop display is active.\r\n\r\nroot@${vmName}:~# _`;
+                    clearInterval(this.vncSimulationTimer);
+                }
+            }, 2500);
+        },
+
+        sendCtrlAltDel(vmName) {
+            this.showToast("Ctrl+Alt+Del sinyali gönderildi. Sunucu yeniden başlatılıyor...", "info");
+            this.startVncSimulation(vmName);
         },
 
         // --- Toast Management ---
