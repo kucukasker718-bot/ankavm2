@@ -1,0 +1,1244 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AnkaVM // Kurumsal VDS Hypervisor Paneli</title>
+    
+    <!-- CDNs and Styling Libraries -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#eff6ff',
+                            100: '#dbeafe',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                            900: '#1e3a8a'
+                        },
+                        slate: {
+                            900: '#0f172a',
+                            950: '#070a13'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Xterm.js CDNs -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+    
+    <!-- Corporate Style Sheet -->
+    <link rel="stylesheet" href="style.css" />
+
+    <!-- Alpine.js -->
+    <script src="app.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-[#0b0f19] min-h-screen flex text-slate-300" x-data="vmPanel">
+
+    <!-- Skeleton Loading Screen -->
+    <div x-show="loading" class="fixed inset-0 bg-[#0b0f19] z-50 flex flex-col items-center justify-center space-y-4">
+        <div class="relative w-16 h-16">
+            <div class="absolute inset-0 rounded-full border-2 border-t-brand-500 border-r-transparent border-l-transparent border-b-transparent animate-spin"></div>
+        </div>
+        <div class="text-sm font-semibold tracking-wider text-slate-400">ANKAVM YÜKLENİYOR...</div>
+    </div>
+
+    <!-- Left Sidebar Navigation -->
+    <aside class="w-60 bg-[#111827] border-r border-slate-800 flex flex-col justify-between shrink-0 sticky top-0 h-screen z-30">
+        <!-- Brand Logo and App Name -->
+        <div class="p-5 border-b border-slate-800">
+            <div class="flex items-center space-x-3">
+                <div class="w-8 h-8 rounded bg-brand-500 flex items-center justify-center text-white font-bold shadow-sm">
+                    <i class="fa-solid fa-server text-sm"></i>
+                </div>
+                <div>
+                    <h1 class="text-base font-bold text-white tracking-wide">
+                        Anka<span class="text-brand-500">VM</span>
+                    </h1>
+                    <p class="text-[9px] text-slate-500 font-mono tracking-wider uppercase">Hypervisor Console</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Navigation Menu Tabs -->
+        <nav class="flex-1 px-3 py-4 space-y-1 font-medium text-xs">
+            <button 
+                @click="setTab('dashboard')"
+                :class="activeTab === 'dashboard' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'"
+                class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left"
+            >
+                <i class="fa-solid fa-chart-pie text-sm" :class="activeTab === 'dashboard' ? 'text-brand-500' : ''"></i>
+                <span>Gösterge Paneli</span>
+            </button>
+
+            <button 
+                @click="setTab('vms')"
+                :class="activeTab === 'vms' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'"
+                class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left"
+            >
+                <i class="fa-solid fa-desktop text-sm" :class="activeTab === 'vms' ? 'text-brand-500' : ''"></i>
+                <span>Sanal Sunucular (VDS)</span>
+            </button>
+
+            <button 
+                @click="setTab('ipam')"
+                :class="activeTab === 'ipam' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'"
+                class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left"
+            >
+                <i class="fa-solid fa-map-location-dot text-sm" :class="activeTab === 'ipam' ? 'text-brand-500' : ''"></i>
+                <span>IPAM (IP Havuzları)</span>
+            </button>
+
+            <button 
+                @click="setTab('networks')"
+                :class="activeTab === 'networks' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'"
+                class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left"
+            >
+                <i class="fa-solid fa-network-wired text-sm" :class="activeTab === 'networks' ? 'text-brand-500' : ''"></i>
+                <span>Ağ Yönetimi</span>
+            </button>
+
+            <button 
+                @click="setTab('storage')"
+                :class="activeTab === 'storage' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'"
+                class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left"
+            >
+                <i class="fa-solid fa-database text-sm" :class="activeTab === 'storage' ? 'text-brand-500' : ''"></i>
+                <span>Depolama Alanları</span>
+            </button>
+
+            <button 
+                @click="setTab('settings')"
+                :class="activeTab === 'settings' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'"
+                class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left"
+            >
+                <i class="fa-solid fa-sliders text-sm" :class="activeTab === 'settings' ? 'text-brand-500' : ''"></i>
+                <span>Sistem Ayarları & WiseCP</span>
+            </button>
+        </nav>
+
+        <!-- Sidebar Footer Status -->
+        <div class="p-4 border-t border-slate-800 font-mono text-[9px] text-slate-500">
+            <div class="flex items-center space-x-2 mb-1.5">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                <span class="text-slate-400 font-semibold uppercase">API Bağlantısı Aktif</span>
+            </div>
+            <div>VERİ MERKEZİ: LOKAL KVM</div>
+            <div>HOST IP: 127.0.0.1</div>
+        </div>
+    </aside>
+
+    <!-- Main Dashboard Container -->
+    <div class="flex-1 flex flex-col min-w-0">
+        
+        <!-- Top Toolbar Header -->
+        <header class="h-16 border-b border-slate-800 bg-[#111827] flex items-center justify-between px-6">
+            <div class="flex items-center space-x-3">
+                <h2 class="text-sm font-bold text-white uppercase tracking-wider">
+                    <span x-show="activeTab === 'dashboard'">GÖSTERGE PANELİ</span>
+                    <span x-show="activeTab === 'vms'">SANAL SUNUCU LİSTESİ</span>
+                    <span x-show="activeTab === 'ipam'">IPAM YÖNETİMİ</span>
+                    <span x-show="activeTab === 'networks'">SANAL AĞ KÖPRÜLERİ</span>
+                    <span x-show="activeTab === 'storage'">DEPOLAMA HAVUZLARI</span>
+                    <span x-show="activeTab === 'settings'">SİSTEM ENTEGRASYONLARI & WiseCP</span>
+                </h2>
+                <div class="h-4 w-[1px] bg-slate-800"></div>
+                <span class="text-[11px] font-mono text-slate-400" x-text="`Aktif VM: ${hostStats.vms_running} / Toplam: ${hostStats.vms_total}`"></span>
+            </div>
+            
+            <div class="flex items-center space-x-4 text-xs font-mono">
+                <div class="flex items-center space-x-4">
+                    <div class="flex items-center space-x-1.5">
+                        <span class="text-slate-500">CPU:</span>
+                        <span class="text-brand-500 font-bold" x-text="`${hostStats.cpu_usage}%`"></span>
+                    </div>
+                    <div class="flex items-center space-x-1.5">
+                        <span class="text-slate-500">RAM:</span>
+                        <span class="text-brand-500 font-bold" x-text="`${hostStats.ram_usage_percent}%`"></span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Categories Page Viewports -->
+        <main class="flex-1 p-6 overflow-y-auto">
+            
+            <!-- CATEGORY 1: DASHBOARD OVERVIEW -->
+            <div x-show="activeTab === 'dashboard'" x-cloak class="space-y-6">
+                
+                <!-- Live Host Resource Gauges -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+                    <div class="corp-card rounded-lg p-4">
+                        <div class="flex justify-between items-start mb-2">
+                            <div>
+                                <h3 class="text-xs uppercase text-slate-400 font-bold tracking-wider">Host CPU Yükü</h3>
+                                <p class="text-xl font-bold text-white mt-0.5" x-text="`${hostStats.cpu_usage}%`"></p>
+                            </div>
+                            <div class="w-7 h-7 rounded bg-brand-500/10 flex items-center justify-center text-brand-500">
+                                <i class="fa-solid fa-microchip text-xs"></i>
+                            </div>
+                        </div>
+                        <div class="relative h-24 flex items-center justify-center">
+                            <canvas id="cpuChartCanvas"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="corp-card rounded-lg p-4">
+                        <div class="flex justify-between items-start mb-2">
+                            <div>
+                                <h3 class="text-xs uppercase text-slate-400 font-bold tracking-wider">Host Bellek (RAM)</h3>
+                                <p class="text-xl font-bold text-white mt-0.5" x-text="`${hostStats.ram_used_gb} GB / ${hostStats.ram_total_gb} GB`"></p>
+                            </div>
+                            <div class="w-7 h-7 rounded bg-brand-500/10 flex items-center justify-center text-brand-500">
+                                <i class="fa-solid fa-memory text-xs"></i>
+                            </div>
+                        </div>
+                        <div class="relative h-24 flex items-center justify-center">
+                            <canvas id="ramChartCanvas"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="corp-card rounded-lg p-4">
+                        <div class="flex justify-between items-start mb-2">
+                            <div>
+                                <h3 class="text-xs uppercase text-slate-400 font-bold tracking-wider">Host Depolama (Disk)</h3>
+                                <p class="text-xl font-bold text-white mt-0.5" x-text="`${hostStats.disk_used_gb} GB / ${hostStats.disk_total_gb} GB`"></p>
+                            </div>
+                            <div class="w-7 h-7 rounded bg-brand-500/10 flex items-center justify-center text-brand-500">
+                                <i class="fa-solid fa-hard-drive text-xs"></i>
+                            </div>
+                        </div>
+                        <div class="relative h-24 flex items-center justify-center">
+                            <canvas id="diskChartCanvas"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Host Quick Stats Counter Cards -->
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-5 font-mono text-xs">
+                    <div class="corp-card p-4 rounded-lg flex items-center space-x-3.5">
+                        <div class="w-8 h-8 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-brand-500">
+                            <i class="fa-solid fa-desktop"></i>
+                        </div>
+                        <div>
+                            <div class="text-[9px] text-slate-500 uppercase">Aktif VDS</div>
+                            <div class="text-base font-bold text-white" x-text="hostStats.vms_running"></div>
+                        </div>
+                    </div>
+
+                    <div class="corp-card p-4 rounded-lg flex items-center space-x-3.5">
+                        <div class="w-8 h-8 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-brand-500">
+                            <i class="fa-solid fa-network-wired"></i>
+                        </div>
+                        <div>
+                            <div class="text-[9px] text-slate-500 uppercase">Ağ Arayüzleri</div>
+                            <div class="text-base font-bold text-white" x-text="networks.length"></div>
+                        </div>
+                    </div>
+
+                    <div class="corp-card p-4 rounded-lg flex items-center space-x-3.5">
+                        <div class="w-8 h-8 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-brand-500">
+                            <i class="fa-solid fa-database"></i>
+                        </div>
+                        <div>
+                            <div class="text-[9px] text-slate-500 uppercase">Depolama Havuzu</div>
+                            <div class="text-base font-bold text-white" x-text="storagePools.length"></div>
+                        </div>
+                    </div>
+
+                    <div class="corp-card p-4 rounded-lg flex items-center space-x-3.5">
+                        <div class="w-8 h-8 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-amber-500">
+                            <i class="fa-solid fa-cube"></i>
+                        </div>
+                        <div>
+                            <div class="text-[9px] text-slate-500 uppercase">Toplam Sunucu</div>
+                            <div class="text-base font-bold text-white" x-text="hostStats.vms_total"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Live System Activity Logs Box -->
+                <div class="corp-card rounded-lg p-5">
+                    <div class="border-b border-slate-800 pb-3 mb-3 flex justify-between items-center">
+                        <h2 class="text-xs font-bold uppercase text-slate-200 flex items-center space-x-2">
+                            <i class="fa-solid fa-list-check text-brand-500"></i>
+                            <span>Hypervisor Eylem Günlüğü (Logs)</span>
+                        </h2>
+                        <span class="text-[9px] font-mono text-slate-500 uppercase">Gerçek Zamanlı</span>
+                    </div>
+
+                    <div class="h-48 bg-slate-950/80 border border-slate-800/80 rounded p-3 overflow-y-auto font-mono text-[10px] leading-relaxed space-y-1.5">
+                        <template x-for="log in activityLogs">
+                            <div class="flex items-start space-x-2">
+                                <span class="text-slate-600" x-text="`[${log.timestamp}]`"></span>
+                                <span 
+                                    :class="{
+                                        'text-brand-500': log.level === 'INFO',
+                                        'text-emerald-500': log.level === 'SUCCESS',
+                                        'text-red-500': log.level === 'WARNING' || log.level === 'ERROR'
+                                    }"
+                                    class="font-bold shrink-0"
+                                    x-text="`[${log.level}]`"
+                                ></span>
+                                <span class="text-slate-300" x-text="log.message"></span>
+                            </div>
+                        </template>
+                        <div x-show="activityLogs.length === 0" class="text-center text-slate-500 py-8">
+                            Kayıtlı eylem bulunmuyor.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CATEGORY 2: VDS MANAGEMENT -->
+            <div x-show="activeTab === 'vms'" x-cloak class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                
+                <!-- VM List and Controls -->
+                <div class="lg:col-span-2 space-y-5">
+                    <div class="corp-card rounded-lg p-5">
+                        
+                        <!-- Search, Filters and Provisioning Button bar -->
+                        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
+                            <div class="relative flex-1 max-w-md">
+                                <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-500 pointer-events-none">
+                                    <i class="fa-solid fa-magnifying-glass text-xs"></i>
+                                </span>
+                                <input 
+                                    type="text" 
+                                    x-model="searchQuery"
+                                    placeholder="Ad, OS veya IP ara..."
+                                    class="w-full pl-9 pr-3 py-1.5 bg-[#0b0f19] border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 transition font-mono"
+                                />
+                            </div>
+                            
+                            <div class="flex items-center space-x-2">
+                                <!-- Filter Tabs -->
+                                <div class="bg-slate-900/60 p-0.5 rounded border border-slate-800 flex text-[10px]">
+                                    <button 
+                                        @click="statusFilter = 'all'" 
+                                        :class="statusFilter === 'all' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:text-white'"
+                                        class="px-2.5 py-1 rounded font-semibold transition"
+                                    >
+                                        TÜMÜ
+                                    </button>
+                                    <button 
+                                        @click="statusFilter = 'running'" 
+                                        :class="statusFilter === 'running' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:text-white'"
+                                        class="px-2.5 py-1 rounded font-semibold transition"
+                                    >
+                                        AKTİF
+                                    </button>
+                                    <button 
+                                        @click="statusFilter = 'offline'" 
+                                        :class="statusFilter === 'offline' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:text-white'"
+                                        class="px-2.5 py-1 rounded font-semibold transition"
+                                    >
+                                        KAPALI
+                                    </button>
+                                </div>
+                                
+                                <button 
+                                    @click="showCreateModal = true" 
+                                    class="btn-primary text-xs font-semibold py-1.5 px-3 rounded flex items-center space-x-1.5"
+                                >
+                                    <i class="fa-solid fa-plus text-[10px]"></i>
+                                    <span>VDS OLUŞTUR</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Data Grid Table (Compact) -->
+                        <div class="overflow-x-auto">
+                            <table class="min-w-full divide-y divide-slate-800 text-xs">
+                                <thead>
+                                    <tr class="text-slate-500 font-semibold uppercase tracking-wider text-left">
+                                        <th @click="setSort('name')" class="py-2.5 px-3 cursor-pointer hover:text-white select-none">
+                                            Sunucu Adı <span x-show="sortBy === 'name'" x-text="sortDesc ? '▼' : '▲'"></span>
+                                        </th>
+                                        <th @click="setSort('status')" class="py-2.5 px-3 cursor-pointer hover:text-white select-none">
+                                            Durum <span x-show="sortBy === 'status'" x-text="sortDesc ? '▼' : '▲'"></span>
+                                        </th>
+                                        <th @click="setSort('cpu')" class="py-2.5 px-3 cursor-pointer hover:text-white select-none">
+                                            Kaynak <span x-show="sortBy === 'cpu'" x-text="sortDesc ? '▼' : '▲'"></span>
+                                        </th>
+                                        <th @click="setSort('ip_address')" class="py-2.5 px-3 cursor-pointer hover:text-white select-none">
+                                            IP Adresi <span x-show="sortBy === 'ip_address'" x-text="sortDesc ? '▼' : '▲'"></span>
+                                        </th>
+                                        <th class="py-2.5 px-3 text-right">Eylemler</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-800/40 font-mono">
+                                    <template x-for="vm in filteredVms" :key="vm.name">
+                                        <tr 
+                                            @click="selectVm(vm.name)"
+                                            :class="selectedVmName === vm.name ? 'bg-brand-500/5 border-l-2 border-l-brand-500' : 'hover:bg-slate-900/30'"
+                                            class="cursor-pointer transition-colors duration-75"
+                                        >
+                                            <td class="py-2.5 px-3">
+                                                <div class="flex items-center space-x-2.5">
+                                                    <div class="w-6 h-6 rounded bg-slate-900 border border-slate-700 flex items-center justify-center">
+                                                        <i class="fa-brands fa-ubuntu text-orange-500 text-xs" x-show="vm.os_template.includes('ubuntu')"></i>
+                                                        <i class="fa-brands fa-debian text-red-500 text-xs" x-show="vm.os_template.includes('debian')"></i>
+                                                        <i class="fa-brands fa-linux text-slate-500 text-xs" x-show="!vm.os_template.includes('ubuntu') && !vm.os_template.includes('debian')"></i>
+                                                    </div>
+                                                    <div>
+                                                        <div class="font-bold text-white" x-text="vm.name"></div>
+                                                        <div class="text-[8px] text-slate-500 uppercase" x-text="vm.os_template"></div>
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            
+                                            <td class="py-2.5 px-3 text-[10px]">
+                                                <span 
+                                                    :class="vm.status === 'running' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20'"
+                                                    class="inline-flex items-center px-2 py-0.5 rounded border"
+                                                >
+                                                    <span 
+                                                        :class="vm.status === 'running' ? 'bg-emerald-500' : 'bg-red-500'" 
+                                                        class="w-1 h-1 rounded-full mr-1.5"
+                                                    ></span>
+                                                    <span x-text="vm.status === 'running' ? 'Aktif' : 'Kapalı'"></span>
+                                                </span>
+                                            </td>
+                                            
+                                            <td class="py-2.5 px-3 text-[10px] text-slate-300">
+                                                <span x-text="`${vm.cpu} vCPU / ${(vm.ram_mb / 1024).toFixed(0)}G RAM / ${vm.disk_gb}G`"></span>
+                                            </td>
+                                            
+                                            <td class="py-2.5 px-3 text-slate-300 text-[10px]" x-text="vm.ip_address || 'DHCP'"></td>
+                                            
+                                            <td class="py-2.5 px-3 text-right" @click.stop>
+                                                <div class="inline-flex space-x-1">
+                                                    <button 
+                                                        x-show="vm.status !== 'running'"
+                                                        @click="triggerAction(vm.name, 'start')"
+                                                        title="Aç"
+                                                        class="w-6 h-6 rounded bg-slate-900 hover:bg-emerald-500/20 border border-slate-800 hover:border-emerald-500 text-slate-400 hover:text-emerald-500 flex items-center justify-center transition"
+                                                    >
+                                                        <i class="fa-solid fa-play text-[9px]"></i>
+                                                    </button>
+                                                    <button 
+                                                        x-show="vm.status === 'running'"
+                                                        @click="triggerAction(vm.name, 'stop')"
+                                                        title="Kapat"
+                                                        class="w-6 h-6 rounded bg-slate-900 hover:bg-amber-500/20 border border-slate-800 hover:border-amber-500 text-slate-400 hover:text-amber-500 flex items-center justify-center transition"
+                                                    >
+                                                        <i class="fa-solid fa-stop text-[9px]"></i>
+                                                    </button>
+                                                    
+                                                    <button 
+                                                        @click="openConsole(vm.name)"
+                                                        title="Konsol"
+                                                        class="w-6 h-6 rounded bg-slate-900 hover:bg-brand-500/20 border border-slate-800 hover:border-brand-500 text-slate-400 hover:text-brand-500 flex items-center justify-center transition"
+                                                    >
+                                                        <i class="fa-solid fa-terminal text-[9px]"></i>
+                                                    </button>
+                                                    
+                                                    <button 
+                                                        @click="deleteVm(vm.name)"
+                                                        title="Sil"
+                                                        class="w-6 h-6 rounded bg-slate-900 hover:bg-red-500/20 border border-slate-800 hover:border-red-500 text-slate-400 hover:text-red-500 flex items-center justify-center transition"
+                                                    >
+                                                        <i class="fa-solid fa-trash-can text-[9px]"></i>
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                    
+                                    <tr x-show="filteredVms.length === 0">
+                                        <td colspan="5" class="py-8 text-center text-slate-500 text-xs">
+                                            Kayıtlı sanal sunucu bulunamadı.
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Detailed Server Inspector (Compact Sidebar) -->
+                <div class="space-y-5">
+                    <div class="corp-card rounded-lg p-5 min-h-[300px]">
+                        <div class="border-b border-slate-800 pb-3 mb-3">
+                            <h2 class="text-xs font-bold uppercase text-slate-200 flex items-center space-x-2">
+                                <i class="fa-solid fa-chart-line text-brand-500"></i>
+                                <span>Canlı Telemetri ve Güç</span>
+                            </h2>
+                        </div>
+
+                        <!-- No VM Selected -->
+                        <div x-show="!selectedVmName" class="h-60 flex flex-col items-center justify-center text-center space-y-2">
+                            <p class="text-xs text-slate-500 font-mono">
+                                Ayrıntılı grafikleri ve güç döngüsü kontrollerini görmek için yan listeden bir VDS seçin.
+                            </p>
+                        </div>
+
+                        <!-- VM Selected -->
+                        <div x-show="selectedVmName" x-cloak class="space-y-4">
+                            <div class="flex justify-between items-center bg-slate-900/60 p-2.5 rounded border border-slate-800">
+                                <div>
+                                    <h3 class="font-bold text-white text-xs" x-text="selectedVmName"></h3>
+                                    <p class="text-[9px] font-mono text-slate-500" x-text="selectedVmTelemetry ? `IP: ${vms.find(v => v.name === selectedVmName).ip_address}` : 'Stat: OFFLINE'"></p>
+                                </div>
+                                <button 
+                                    @click="triggerAction(selectedVmName, 'restart')"
+                                    class="px-2 py-1 rounded bg-slate-900 border border-slate-700 text-[9px] font-mono text-brand-500 hover:bg-slate-800 transition"
+                                >
+                                    Reboot
+                                </button>
+                            </div>
+
+                            <!-- Live Performance Chart Canvas -->
+                            <div>
+                                <div class="h-32 bg-slate-950/40 rounded border border-slate-800 p-1.5 relative flex items-center justify-center">
+                                    <canvas id="vmPerformanceChartCanvas"></canvas>
+                                    
+                                    <div x-show="!selectedVmTelemetry" class="absolute inset-0 bg-[#0b0f19]/95 flex items-center justify-center text-center">
+                                        <span class="text-[10px] font-mono text-slate-500 uppercase">
+                                            <i class="fa-solid fa-power-off mr-1"></i>VM Kapalı
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Network and Disk IO stats -->
+                            <div class="grid grid-cols-2 gap-2 text-[10px] font-mono">
+                                <div class="bg-slate-900/40 p-2 rounded border border-slate-800/80">
+                                    <div class="text-[8px] uppercase text-slate-500">Ağ Gelen (RX)</div>
+                                    <div class="text-brand-500 font-bold mt-0.5" x-text="selectedVmTelemetry ? `${selectedVmTelemetry.network_rx_kbps} Kb/s` : '0.0 Kb/s'"></div>
+                                </div>
+                                <div class="bg-slate-900/40 p-2 rounded border border-slate-800/80">
+                                    <div class="text-[8px] uppercase text-slate-500">Ağ Giden (TX)</div>
+                                    <div class="text-slate-400 font-bold mt-0.5" x-text="selectedVmTelemetry ? `${selectedVmTelemetry.network_tx_kbps} Kb/s` : '0.0 Kb/s'"></div>
+                                </div>
+                                <div class="bg-slate-900/40 p-2 rounded border border-slate-800/80">
+                                    <div class="text-[8px] uppercase text-slate-500">Disk Okuma</div>
+                                    <div class="text-brand-500 font-bold mt-0.5" x-text="selectedVmTelemetry ? `${selectedVmTelemetry.disk_read_kbps} Kb/s` : '0.0 Kb/s'"></div>
+                                </div>
+                                <div class="bg-slate-900/40 p-2 rounded border border-slate-800/80">
+                                    <div class="text-[8px] uppercase text-slate-500">Disk Yazma</div>
+                                    <div class="text-emerald-500 font-bold mt-0.5" x-text="selectedVmTelemetry ? `${selectedVmTelemetry.disk_write_kbps} Kb/s` : '0.0 Kb/s'"></div>
+                                </div>
+                            </div>
+
+                            <!-- Force Destroy control trigger -->
+                            <div class="border-t border-slate-800 pt-3">
+                                <button 
+                                    @click="triggerAction(selectedVmName, 'force-stop')"
+                                    class="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-[10px] uppercase py-1.5 rounded flex items-center justify-center space-x-1 transition"
+                                >
+                                    <i class="fa-solid fa-bolt"></i>
+                                    <span>GÜCÜ KES (DESTROY)</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CATEGORY 3: IPAM ADDRESS MANAGEMENT -->
+            <div x-show="activeTab === 'ipam'" x-cloak class="space-y-6">
+                
+                <!-- IP Pools utilization grid -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <template x-for="pool in ipPools">
+                        <div class="corp-card rounded-lg p-5">
+                            <div class="flex justify-between items-start mb-2">
+                                <div>
+                                    <h3 class="text-xs uppercase text-white font-bold" x-text="`HAVUZ: ${pool.name}`"></h3>
+                                    <p class="text-[10px] text-slate-500 font-mono mt-0.5" x-text="`CIDR: ${pool.cidr} // Gateway: ${pool.gateway}`"></p>
+                                </div>
+                                <span class="bg-brand-500/10 text-brand-500 border border-brand-500/20 px-2 py-0.5 rounded text-[9px] font-mono" x-text="`DNS: ${pool.dns_primary}`"></span>
+                            </div>
+
+                            <!-- Utilization Bar -->
+                            <div class="space-y-2 mt-4 font-mono text-[11px]">
+                                <div class="flex justify-between text-slate-400">
+                                    <span>IP Bloğu Doluluk Oranı</span>
+                                    <span x-text="`%${pool.usage_percent}`"></span>
+                                </div>
+                                <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-800">
+                                    <div 
+                                        :style="`width: ${pool.usage_percent}%`"
+                                        class="bg-brand-500 h-full"
+                                    ></div>
+                                </div>
+                                <div class="flex justify-between text-[9px] text-slate-500">
+                                    <span x-text="`Kullanılan: ${pool.allocated_ips} IP`"></span>
+                                    <span x-text="`Boş: ${pool.free_ips} IP / Toplam: ${pool.total_ips} IP`"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <!-- IP Leases and assignments -->
+                <div class="corp-card rounded-lg p-5">
+                    <div class="flex justify-between items-center mb-5">
+                        <div>
+                            <h2 class="text-xs font-bold uppercase text-slate-200 flex items-center space-x-2">
+                                <i class="fa-solid fa-map-location-dot text-brand-500"></i>
+                                <span>Aktif IPAM Kiralama Tablosu (Leases)</span>
+                            </h2>
+                            <p class="text-[10px] text-slate-500 mt-1 font-mono">Aktif rezerve edilen statik IP adresleri ve bağlı olduğu VDS</p>
+                        </div>
+                        <button 
+                            @click="showCreatePoolModal = true"
+                            class="btn-primary text-xs font-semibold py-1.5 px-3 rounded flex items-center space-x-1.5"
+                        >
+                            <i class="fa-solid fa-plus text-[10px]"></i>
+                            <span>YENİ IP BLOĞU EKLE</span>
+                        </button>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-slate-800 font-mono text-xs">
+                            <thead>
+                                <tr class="text-slate-500 font-semibold uppercase text-left">
+                                    <th class="py-2.5 px-3">IP Adresi</th>
+                                    <th class="py-2.5 px-3">Havuz</th>
+                                    <th class="py-2.5 px-3">Durum</th>
+                                    <th class="py-2.5 px-3">Bağlı Olduğu VDS</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-800/40">
+                                <template x-for="lease in ipLeases" :key="lease.ip_address">
+                                    <tr class="hover:bg-slate-900/30">
+                                        <td class="py-2.5 px-3 font-bold text-white" x-text="lease.ip_address"></td>
+                                        <td class="py-2.5 px-3 text-slate-400" x-text="`pool-${lease.pool_id}`"></td>
+                                        <td class="py-2.5 px-3 text-[10px]">
+                                            <span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded">DOLU (ALLOCATED)</span>
+                                        </td>
+                                        <td class="py-2.5 px-3 text-brand-500 font-bold" x-text="lease.allocated_to_vm || 'Rezerve IP'"></td>
+                                    </tr>
+                                </template>
+                                <tr x-show="ipLeases.length === 0">
+                                    <td colspan="4" class="py-8 text-center text-slate-500 text-xs">
+                                        Aktif IP tahsisi bulunmuyor. Kurulan VDS'ler otomatik olarak IPAM'den IP çekecektir.
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- CATEGORY 4: NETWORKS MANAGEMENT -->
+            <div x-show="activeTab === 'networks'" x-cloak class="space-y-6">
+                <div class="corp-card rounded-lg p-5">
+                    <div class="flex justify-between items-center mb-5">
+                        <div>
+                            <h2 class="text-xs font-bold uppercase text-slate-200 flex items-center space-x-2">
+                                <i class="fa-solid fa-network-wired text-brand-500"></i>
+                                <span>KVM Ağ Köprüleri ve Arabirimler</span>
+                            </h2>
+                            <p class="text-[10px] text-slate-500 mt-1 font-mono">Libvirt / NAT ağ kartları ve DHCP aralıkları</p>
+                        </div>
+                        <button 
+                            @click="showCreateNetModal = true"
+                            class="btn-primary text-xs font-semibold py-1.5 px-3 rounded flex items-center space-x-1.5"
+                        >
+                            <i class="fa-solid fa-plus text-[10px]"></i>
+                            <span>YENİ SANAL AĞ EKLE</span>
+                        </button>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-slate-800 font-mono text-xs">
+                            <thead>
+                                <tr class="text-slate-500 font-semibold uppercase text-left">
+                                    <th class="py-2.5 px-3">Ağ Adı</th>
+                                    <th class="py-2.5 px-3">Durum</th>
+                                    <th class="py-2.5 px-3">Bridge</th>
+                                    <th class="py-2.5 px-3">Gateway</th>
+                                    <th class="py-2.5 px-3">DHCP Havuzu</th>
+                                    <th class="py-2.5 px-3">Autostart</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-800/40">
+                                <template x-for="net in networks" :key="net.name">
+                                    <tr class="hover:bg-slate-900/30">
+                                        <td class="py-2.5 px-3 font-bold text-white" x-text="net.name"></td>
+                                        <td class="py-2.5 px-3">
+                                            <span 
+                                                :class="net.status === 'active' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20'"
+                                                class="inline-flex items-center px-1.5 py-0.5 rounded border text-[10px]"
+                                            >
+                                                <span x-text="net.status === 'active' ? 'AKTİF' : 'PASİF'"></span>
+                                            </span>
+                                        </td>
+                                        <td class="py-2.5 px-3 text-slate-300" x-text="net.bridge"></td>
+                                        <td class="py-2.5 px-3 text-slate-300" x-text="net.ip_address"></td>
+                                        <td class="py-2.5 px-3 text-slate-400" x-text="net.dhcp_range"></td>
+                                        <td class="py-2.5 px-3 text-slate-400 uppercase" x-text="net.autostart"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CATEGORY 5: STORAGE POOLS -->
+            <div x-show="activeTab === 'storage'" x-cloak class="space-y-6">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <template x-for="pool in storagePools">
+                        <div class="corp-card rounded-lg p-5">
+                            <div class="flex justify-between items-start mb-4">
+                                <div>
+                                    <h3 class="text-xs uppercase text-white font-bold" x-text="`DEPOLAMA HAVUZU: ${pool.name}`"></h3>
+                                    <p class="text-[9px] text-slate-500 font-mono mt-0.5" x-text="`Dizin: ${pool.path}`"></p>
+                                </div>
+                                <span 
+                                    :class="pool.status === 'active' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20'"
+                                    class="px-2 py-0.5 rounded border text-[9px] font-mono"
+                                    x-text="pool.status === 'active' ? 'AKTİF' : 'PASİF'"
+                                ></span>
+                            </div>
+
+                            <div class="space-y-2 mt-4 font-mono text-[11px]">
+                                <div class="flex justify-between text-slate-400">
+                                    <span>Hacim Doluluk Oranı</span>
+                                    <span x-text="`%${pool.usage_percent}`"></span>
+                                </div>
+                                <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-800">
+                                    <div 
+                                        :style="`width: ${pool.usage_percent}%`"
+                                        class="bg-brand-500 h-full"
+                                    ></div>
+                                </div>
+                                <div class="flex justify-between text-[9px] text-slate-500">
+                                    <span x-text="`Kullanılan: ${pool.allocation_gb} GB`"></span>
+                                    <span x-text="`Boş: ${pool.free_gb} GB / Toplam: ${pool.capacity_gb} GB`"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <!-- CATEGORY 6: HYPERVISOR SETTINGS & WiseCP CODE VIEWER -->
+            <div x-show="activeTab === 'settings'" x-cloak class="space-y-6">
+                
+                <!-- WiseCP Module Source Code Copy Area -->
+                <div class="corp-card rounded-lg p-5 space-y-4">
+                    <div class="border-b border-slate-800 pb-3">
+                        <h2 class="text-xs font-bold uppercase text-white flex items-center space-x-2">
+                            <i class="fa-solid fa-plug text-brand-500"></i>
+                            <span>WiseCP & WHMCS Entegrasyon Modülü</span>
+                        </h2>
+                        <p class="text-[10px] text-slate-500 font-mono mt-1">WiseCP Server sanallaştırma modülü entegrasyonu kod blokları</p>
+                    </div>
+
+                    <div class="space-y-3 font-sans text-xs">
+                        <p class="text-slate-400 leading-relaxed">
+                            WiseCP veya WHMCS faturalandırma yazılımınızdan AnkaVM API Gateway sunucunuza bağlanmak için aşağıdaki PHP modülünü kullanın.
+                            Bu dosya WiseCP sunucunuzda aşağıdaki dizine yüklenmelidir:
+                        </p>
+                        <div class="bg-slate-900 p-2.5 rounded border border-slate-800 font-mono text-[11px] text-brand-500">
+                            /cpanel/modules/Servers/AnkaVM/AnkaVM.php
+                        </div>
+                        
+                        <div class="space-y-1.5 pt-2">
+                            <div class="flex justify-between items-center">
+                                <span class="text-[10px] text-slate-500 font-mono uppercase">Modül Kaynak Kodu (PHP-Hook):</span>
+                                <button 
+                                    @click="navigator.clipboard.writeText(document.getElementById('php-module-code').innerText); showToast('WiseCP Modül kodu kopyalandı!', 'success')"
+                                    class="px-2.5 py-1 rounded bg-slate-900 border border-slate-700 hover:bg-slate-800 text-[10px] font-mono text-brand-500 transition"
+                                >
+                                    <i class="fa-solid fa-copy mr-1"></i>Kodu Kopyala
+                                </button>
+                            </div>
+                            <pre class="bg-slate-950/80 p-3 rounded border border-slate-800 font-mono text-[10px] leading-relaxed text-slate-300 overflow-y-auto max-h-60" id="php-module-code">
+&lt;?php
+/**
+ * AnkaVM Server Virtualization Module - WiseCP & WHMCS
+ * Place at: /cpanel/modules/Servers/AnkaVM/AnkaVM.php
+ */
+class AnkaVM {
+    private $apiUrl;
+    private $apiKey;
+
+    public function __construct($apiUrl, $apiKey) {
+        $this->apiUrl = rtrim($apiUrl, '/');
+        $this->apiKey = $apiKey;
+    }
+
+    private function call($endpoint, $method = 'GET', $data = null) {
+        $ch = curl_init();
+        $url = $this->apiUrl . '/' . ltrim($endpoint, '/');
+        $headers = [
+            'X-API-Key: ' . $this->apiKey,
+            'Content-Type: application/json'
+        ];
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+        if ($data) curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        $response = curl_exec($ch);
+        curl_close($ch);
+        return json_decode($response, true);
+    }
+
+    public function createServer($vmName, $cpu, $ram, $disk, $template, $rootPassword) {
+        return $this->call('/api/vms', 'POST', [
+            'name' => $vmName,
+            'cpu' => $cpu,
+            'ram_mb' => $ram,
+            'disk_gb' => $disk,
+            'os_template' => $template,
+            'root_password' => $rootPassword
+        ]);
+    }
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- API Key Panel -->
+                <div class="corp-card rounded-lg p-5 space-y-4">
+                    <h2 class="text-xs font-bold uppercase text-white tracking-wider flex items-center space-x-2">
+                        <i class="fa-solid fa-key text-brand-500"></i>
+                        <span>API Gateway Kimlik Bilgileri</span>
+                    </h2>
+
+                    <div class="space-y-4 font-mono text-xs">
+                        <div class="bg-slate-900/60 p-4 rounded border border-slate-800 space-y-2">
+                            <h3 class="text-white font-bold uppercase text-[11px]">API Erişim Anahtarı (X-API-Key)</h3>
+                            <p class="text-slate-400 text-[10px] leading-relaxed">
+                                WiseCP modül ayarlarında API erişimi sağlamak için bu anahtarı kullanın.
+                            </p>
+                            <div class="flex items-center space-x-2 mt-2">
+                                <input 
+                                    type="text" 
+                                    readonly
+                                    value="ankavm-secure-dev-token-2026"
+                                    class="bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 w-full text-brand-500 max-w-sm"
+                                />
+                                <button 
+                                    @click="navigator.clipboard.writeText('ankavm-secure-dev-token-2026'); showToast('API Anahtarı kopyalandı.', 'success')"
+                                    class="btn-primary font-bold py-1.5 px-3 rounded text-[10px] uppercase"
+                                >
+                                    Kopyala
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- Create Virtual Machine Modal Overlay -->
+    <div 
+        x-show="showCreateModal" 
+        x-transition.opacity
+        class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+    >
+        <div 
+            @click.away="showCreateModal = false"
+            class="corp-card w-full max-w-md rounded-lg overflow-hidden shadow-2xl"
+        >
+            <div class="border-b border-slate-800 p-4 bg-[#111827] flex justify-between items-center">
+                <h2 class="text-xs font-bold uppercase text-white tracking-wider flex items-center space-x-2">
+                    <i class="fa-solid fa-server text-brand-500"></i>
+                    <span>YENİ SANAL SUNUCU (VDS) TANIMLA</span>
+                </h2>
+                <button @click="showCreateModal = false" class="text-slate-400 hover:text-white transition">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            
+            <form @submit.prevent="provisionVm" class="p-5 space-y-3.5">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">SUNUCU ADI</label>
+                        <input 
+                            type="text" 
+                            x-model="createForm.name"
+                            required
+                            placeholder="web-prod-01"
+                            pattern="^[a-zA-Z0-9_-]+$"
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                        />
+                    </div>
+                    <div>
+                        <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">İŞLETİM SİSTEMİ</label>
+                        <select 
+                            x-model="createForm.os_template"
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                        >
+                            <option value="ubuntu-22.04">Ubuntu 22.04 LTS</option>
+                            <option value="debian-12">Debian 12 Bookworm</option>
+                            <option value="rockylinux-9">Rocky Linux 9</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">vCPU</label>
+                        <select 
+                            x-model.number="createForm.cpu"
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                        >
+                            <option value="1">1 Core</option>
+                            <option value="2">2 Cores</option>
+                            <option value="4">4 Cores</option>
+                            <option value="8">8 Cores</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">BELLEK</label>
+                        <select 
+                            x-model.number="createForm.ram_mb"
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                        >
+                            <option value="1024">1 GB</option>
+                            <option value="2048">2 GB</option>
+                            <option value="4096">4 GB</option>
+                            <option value="8192">8 GB</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">DISK (SSD)</label>
+                        <select 
+                            x-model.number="createForm.disk_gb"
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                        >
+                            <option value="20">20 GB</option>
+                            <option value="40">40 GB</option>
+                            <option value="80">80 GB</option>
+                            <option value="160">160 GB</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Cloud-init attributes inputs -->
+                <div class="border-t border-slate-800/80 pt-3 space-y-3 font-mono">
+                    <span class="text-[9px] text-brand-500 font-bold tracking-widest block uppercase">Cloud-Init Parametreleri</span>
+                    
+                    <div>
+                        <label class="block text-[9px] uppercase text-slate-400 font-bold mb-1">ROOT ŞİFRESİ ENJEKSİYONU</label>
+                        <input 
+                            type="text" 
+                            x-model="createForm.root_password"
+                            required
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500"
+                        />
+                    </div>
+
+                    <div>
+                        <label class="block text-[9px] uppercase text-slate-400 font-bold mb-1">AUTHORIZED SSH PUBLIC KEY (İSTEĞE BAĞLI)</label>
+                        <textarea 
+                            rows="2"
+                            x-model="createForm.ssh_key"
+                            placeholder="ssh-rsa AAAAB3NzaC..."
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-[10px] text-white focus:outline-none focus:border-brand-500"
+                        ></textarea>
+                    </div>
+                </div>
+
+                <div class="border-t border-slate-800 pt-3 flex justify-end space-x-2">
+                    <button 
+                        type="button" 
+                        @click="showCreateModal = false" 
+                        class="px-3 py-1.5 text-slate-400 hover:text-white text-xs font-bold uppercase transition"
+                    >
+                        İPTAL
+                    </button>
+                    <button 
+                        type="submit" 
+                        class="btn-primary text-xs font-semibold py-1.5 px-4 rounded"
+                    >
+                        SUNUCUYU BAŞLAT
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Create Virtual Network Modal Overlay -->
+    <div 
+        x-show="showCreateNetModal" 
+        x-transition.opacity
+        class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+    >
+        <div 
+            @click.away="showCreateNetModal = false"
+            class="corp-card w-full max-w-md rounded-lg overflow-hidden shadow-2xl"
+        >
+            <div class="border-b border-slate-800 p-4 bg-[#111827] flex justify-between items-center">
+                <h2 class="text-xs font-bold uppercase text-white tracking-wider flex items-center space-x-2">
+                    <i class="fa-solid fa-network-wired text-brand-500"></i>
+                    <span>YENİ SANAL KÖPRÜ TANIMLA</span>
+                </h2>
+                <button @click="showCreateNetModal = false" class="text-slate-400 hover:text-white transition">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            
+            <form @submit.prevent="provisionNetwork" class="p-5 space-y-3">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">AĞ ADI</label>
+                        <input 
+                            type="text" 
+                            x-model="createNetForm.name"
+                            required
+                            placeholder="database-net"
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                        />
+                    </div>
+
+                    <div>
+                        <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">BRIDGE ARAYÜZÜ</label>
+                        <input 
+                            type="text" 
+                            x-model="createNetForm.bridge"
+                            required
+                            placeholder="virbr2"
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                        />
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">GATEWAY IP</label>
+                    <input 
+                        type="text" 
+                        x-model="createNetForm.ip"
+                        required
+                        placeholder="192.168.120.1"
+                        class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                    />
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">DHCP BAŞLANGIÇ</label>
+                        <input 
+                            type="text" 
+                            x-model="createNetForm.dhcp_start"
+                            required
+                            placeholder="192.168.120.2"
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                        />
+                    </div>
+
+                    <div>
+                        <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">DHCP BİTİŞ</label>
+                        <input 
+                            type="text" 
+                            x-model="createNetForm.dhcp_end"
+                            required
+                            placeholder="192.168.120.254"
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                        />
+                    </div>
+                </div>
+
+                <div class="border-t border-slate-800 pt-3 flex justify-end space-x-2">
+                    <button 
+                        type="button" 
+                        @click="showCreateNetModal = false" 
+                        class="px-3 py-1.5 text-slate-400 hover:text-white text-xs font-bold uppercase transition"
+                    >
+                        İPTAL
+                    </button>
+                    <button 
+                        type="submit" 
+                        class="btn-primary text-xs font-semibold py-1.5 px-4 rounded"
+                    >
+                        AĞI OLUŞTUR
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Create IPAM Pool Modal Overlay -->
+    <div 
+        x-show="showCreatePoolModal" 
+        x-transition.opacity
+        class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+    >
+        <div 
+            @click.away="showCreatePoolModal = false"
+            class="corp-card w-full max-w-md rounded-lg overflow-hidden shadow-2xl"
+        >
+            <div class="border-b border-slate-800 p-4 bg-[#111827] flex justify-between items-center">
+                <h2 class="text-xs font-bold uppercase text-white tracking-wider flex items-center space-x-2">
+                    <i class="fa-solid fa-map-location-dot text-brand-500"></i>
+                    <span>YENİ IPAM DAĞITIM HAVUZU EKLE</span>
+                </h2>
+                <button @click="showCreatePoolModal = false" class="text-slate-400 hover:text-white transition">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            
+            <form @submit.prevent="provisionIpPool" class="p-5 space-y-3">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">HAVUZ ADI</label>
+                        <input 
+                            type="text" 
+                            x-model="createPoolForm.name"
+                            required
+                            placeholder="database-pool"
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                        />
+                    </div>
+
+                    <div>
+                        <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">AĞ (CIDR)</label>
+                        <input 
+                            type="text" 
+                            x-model="createPoolForm.cidr"
+                            required
+                            placeholder="192.168.110.0/24"
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                        />
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">AĞ GEÇİDİ (GATEWAY)</label>
+                    <input 
+                        type="text" 
+                        x-model="createPoolForm.gateway"
+                        required
+                        placeholder="192.168.110.1"
+                        class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                    />
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">BİRİNCİL DNS</label>
+                        <input 
+                            type="text" 
+                            x-model="createPoolForm.dns_primary"
+                            required
+                            placeholder="8.8.8.8"
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                        />
+                    </div>
+
+                    <div>
+                        <label class="block text-[10px] uppercase text-slate-400 font-bold mb-1">İKİNCİL DNS</label>
+                        <input 
+                            type="text" 
+                            x-model="createPoolForm.dns_secondary"
+                            required
+                            placeholder="1.1.1.1"
+                            class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                        />
+                    </div>
+                </div>
+
+                <div class="border-t border-slate-800 pt-3 flex justify-end space-x-2">
+                    <button 
+                        type="button" 
+                        @click="showCreatePoolModal = false" 
+                        class="px-3 py-1.5 text-slate-400 hover:text-white text-xs font-bold uppercase transition"
+                    >
+                        İPTAL
+                    </button>
+                    <button 
+                        type="submit" 
+                        class="btn-primary text-xs font-semibold py-1.5 px-4 rounded"
+                    >
+                        HAVUZU EKLE
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Interactive Terminal Emulator Modal Window -->
+    <div 
+        x-show="showConsoleModal" 
+        x-transition.opacity
+        class="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+    >
+        <div 
+            class="corp-card w-full max-w-3xl rounded-lg overflow-hidden shadow-2xl"
+            @click.away="closeConsole()"
+        >
+            <div class="border-b border-slate-800 p-3 bg-[#111827] flex justify-between items-center">
+                <div class="flex items-center space-x-2">
+                    <span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>
+                    <span class="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                        KVM SERİ KONSOL ttyS0: <span x-text="wsConsole ? wsConsole.url.split('/').pop() : ''" class="text-white"></span>
+                    </span>
+                </div>
+                <button @click="closeConsole()" class="text-slate-400 hover:text-white transition">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            
+            <div class="p-4 bg-[#070a13] relative">
+                <div class="p-1 border border-slate-800 rounded bg-[#070a13]">
+                    <div id="terminal-container" class="w-full bg-[#070a13]"></div>
+                </div>
+                <div class="mt-3 flex items-center justify-between text-[9px] font-mono text-slate-500 uppercase">
+                    <span>WebSocket Serial link active</span>
+                    <span class="text-brand-500">Giriş: root</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast stack system -->
+    <div class="fixed bottom-5 right-5 space-y-2.5 z-50 max-w-xs w-full">
+        <template x-for="toast in toasts" :key="toast.id">
+            <div 
+                x-transition:enter="transition ease-out duration-200 transform"
+                x-transition:enter-start="translate-y-2 opacity-0"
+                x-transition:enter-end="translate-y-0 opacity-100"
+                x-transition:leave="transition ease-in duration-150"
+                x-transition:leave-start="opacity-100"
+                x-transition:leave-end="opacity-0"
+                :class="{
+                    'border-l-brand-500 text-brand-500': toast.type === 'info',
+                    'border-l-emerald-500 text-emerald-400': toast.type === 'success',
+                    'border-l-red-500 text-red-400': toast.type === 'warning' || toast.type === 'error'
+                }"
+                class="corp-card p-3 rounded flex items-start space-x-2.5 bg-[#111827]/95 border-l-4 border-slate-800 text-xs"
+            >
+                <div class="flex-shrink-0 mt-0.5">
+                    <i class="fa-solid fa-circle-info" x-show="toast.type === 'info'"></i>
+                    <i class="fa-solid fa-circle-check" x-show="toast.type === 'success'"></i>
+                    <i class="fa-solid fa-triangle-exclamation" x-show="toast.type === 'warning'"></i>
+                    <i class="fa-solid fa-circle-xmark" x-show="toast.type === 'error'"></i>
+                </div>
+                <div class="flex-1 font-sans">
+                    <p class="font-medium text-slate-200" x-text="toast.message"></p>
+                </div>
+                <button @click="removeToast(toast.id)" class="text-slate-500 hover:text-white transition">
+                    <i class="fa-solid fa-xmark text-[10px]"></i>
+                </button>
+            </div>
+        </template>
+    </div>
+
+</body>
+</html>

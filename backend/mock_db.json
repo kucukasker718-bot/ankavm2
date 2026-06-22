@@ -1,0 +1,32 @@
+{
+    "web-prod-01": {
+        "name": "web-prod-01",
+        "status": "running",
+        "cpu": 4,
+        "ram_mb": 8192,
+        "disk_gb": 120,
+        "ip_address": "192.168.122.10",
+        "vnc_port": 5900,
+        "os_template": "ubuntu-22.04"
+    },
+    "db-replica-02": {
+        "name": "db-replica-02",
+        "status": "running",
+        "cpu": 8,
+        "ram_mb": 16384,
+        "disk_gb": 350,
+        "ip_address": "192.168.122.25",
+        "vnc_port": 5901,
+        "os_template": "debian-12"
+    },
+    "k8s-worker-01": {
+        "name": "k8s-worker-01",
+        "status": "shut off",
+        "cpu": 2,
+        "ram_mb": 4096,
+        "disk_gb": 80,
+        "ip_address": "192.168.122.42",
+        "vnc_port": 5902,
+        "os_template": "rockylinux-9"
+    }
+}
