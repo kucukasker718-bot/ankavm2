@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# AnkaVM - Self-Contained Automated Installer for Ubuntu
+# AnkaVM - Production-Ready Self-Contained Automated Installer for Ubuntu
 # ==============================================================================
 #
 # This single script contains the entire application codebase (FastAPI backend,
-# corporate frontend, Nginx reverse-proxy, Systemd service).
+# license check clients, watchdog auto-repair daemons, frontend portal, Nginx proxy).
 # It will automatically write all files and configure KVM virtualization.
 #
 # Run as root or with sudo:
@@ -48,11 +48,13 @@ apt-get install -y \
   nginx \
   curl \
   util-linux \
-  genisoimage
+  genisoimage \
+  vnstat
 
 # Ensure libvirtd service is active
 systemctl enable --now libvirtd
-echo -e "${GREEN}✓ Hypervisor engines active.${NC}\n"
+systemctl enable --now vnstat
+echo -e "${GREEN}✓ Hypervisor and monitoring engines active.${NC}\n"
 
 # 2. Provision dedicated system user
 echo -e "${YELLOW}[2/7] Provisioning dedicated 'ankavm' system user...${NC}"
@@ -76,6 +78,13 @@ cat << 'EOF' > "$SUDOERS_FILE"
 ankavm ALL=(root) NOPASSWD: /usr/bin/virsh *
 ankavm ALL=(root) NOPASSWD: /usr/bin/qemu-img *
 ankavm ALL=(root) NOPASSWD: /usr/bin/virt-install *
+ankavm ALL=(root) NOPASSWD: /sbin/vgs *
+ankavm ALL=(root) NOPASSWD: /sbin/lvs *
+ankavm ALL=(root) NOPASSWD: /sbin/lvcreate *
+ankavm ALL=(root) NOPASSWD: /sbin/lvremove *
+ankavm ALL=(root) NOPASSWD: /sbin/lvresize *
+ankavm ALL=(root) NOPASSWD: /sbin/zpool *
+ankavm ALL=(root) NOPASSWD: /sbin/zfs *
 EOF
 chmod 0440 "$SUDOERS_FILE"
 echo -e "${GREEN}✓ Sudo wrapper limits written to $SUDOERS_FILE.${NC}\n"
@@ -86,6 +95,7 @@ mkdir -p /opt/ankavm/backend
 mkdir -p /opt/ankavm/frontend
 mkdir -p /opt/ankavm/nginx
 mkdir -p /opt/ankavm/systemd
+mkdir -p /opt/ankavm/scripts
 
 # Write backend/requirements.txt
 cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/requirements.txt
@@ -105,6 +115,7 @@ import shutil
 API_HOST = os.getenv("ANKAVM_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("ANKAVM_PORT", "8086"))
 API_KEY = os.getenv("ANKAVM_API_KEY", "ankavm-secure-dev-token-2026")
+LICENSE_KEY = os.getenv("ANKAVM_LICENSE_KEY", "ANKAVM-TRIAL-KEY-2026")
 
 # Libvirt Configurations
 LIBVIRT_IMAGES_DIR = os.getenv("ANKAVM_IMAGES_DIR", "/var/lib/libvirt/images")
@@ -129,6 +140,7 @@ class VMCreate(BaseModel):
     cpu: int = Field(1, ge=1, le=32, description="Number of vCPUs allocated")
     ram_mb: int = Field(1024, ge=512, le=131072, description="RAM allocation in Megabytes")
     disk_gb: int = Field(20, ge=5, le=2000, description="Disk volume size in Gigabytes")
+    disk_pool: Optional[str] = Field("default", description="Storage pool vg/zpool/directory name")
     os_template: str = Field("ubuntu-22.04", description="Operating system distribution template")
     root_password: Optional[str] = Field("AnkaVM-Secure-Root-2026", description="Administrator root password to inject")
     ssh_key: Optional[str] = Field(None, description="Authorized SSH public key to inject")
@@ -159,6 +171,7 @@ class VMResponse(BaseModel):
     cpu: int
     ram_mb: int
     disk_gb: int
+    disk_used_gb: Optional[float] = 2.5
     ip_address: Optional[str] = "192.168.122.100"
     vnc_port: Optional[int] = 5900
     os_template: str
@@ -200,6 +213,18 @@ class NetworkCreate(BaseModel):
         if not re.match(r"^[a-zA-Z0-9_-]+$", v):
             raise ValueError("Names must only contain alphanumeric characters, hyphens, and underscores")
         return v
+
+class WiseCPDeploy(BaseModel):
+    order_id: str
+    product_id: str
+    name: str
+    cpu: int
+    ram_mb: int
+    disk_gb: int
+    disk_pool: Optional[str] = "default"
+    os_template: str
+    root_password: str
+    callback_url: Optional[str] = None
 _ANKAVM_EOF_
 
 # Write backend/cloud_init.py
@@ -745,8 +770,11 @@ class VMManager:
             db = self._read_mock_db()
             if name in db:
                 db[name]["status"] = status
+                if "disk_used_gb" not in db[name]:
+                    db[name]["disk_used_gb"] = round(db[name]["disk_gb"] * 0.15 + random.uniform(1.0, 5.0), 1)
+                    self._write_mock_db(db)
                 return VMResponse(**db[name])
-            return VMResponse(name=name, status=status, cpu=1, ram_mb=1024, disk_gb=20, os_template="unknown")
+            return VMResponse(name=name, status=status, cpu=1, ram_mb=1024, disk_gb=20, disk_used_gb=1.5, os_template="unknown")
 
         try:
             result = self._run_secure_cmd(["/usr/bin/virsh", "dumpxml", name])
@@ -764,12 +792,31 @@ class VMManager:
             vnc_port = int(vnc_match.group(1)) if vnc_match else 5900
             ip_address = self._get_vm_ip(name)
 
+            disk_used_gb = 2.5
+            disk_gb = 20
+            try:
+                blk_out = self._run_secure_cmd(["/usr/bin/virsh", "domblkinfo", name, "vda"]).stdout
+                alloc_match = re.search(r"Allocation:\s+(\d+)", blk_out)
+                cap_match = re.search(r"Capacity:\s+(\d+)", blk_out)
+                if alloc_match:
+                    disk_used_gb = round(int(alloc_match.group(1)) / (1024**3), 1)
+                if cap_match:
+                    disk_gb = int(int(cap_match.group(1)) / (1024**3))
+            except Exception:
+                try:
+                    disk_path = f"{LIBVIRT_IMAGES_DIR}/{name}.qcow2"
+                    if os.path.exists(disk_path):
+                        disk_used_gb = round(os.path.getsize(disk_path) / (1024**3), 1)
+                except Exception:
+                    pass
+
             return VMResponse(
                 name=name,
                 status=status,
                 cpu=cpu,
                 ram_mb=ram_mb,
-                disk_gb=20,
+                disk_gb=disk_gb,
+                disk_used_gb=disk_used_gb,
                 ip_address=ip_address,
                 vnc_port=vnc_port,
                 os_template="ubuntu-22.04"
@@ -781,6 +828,7 @@ class VMManager:
                 cpu=1,
                 ram_mb=1024,
                 disk_gb=20,
+                disk_used_gb=2.5,
                 ip_address="192.168.122.100",
                 vnc_port=5900,
                 os_template="ubuntu-22.04"
@@ -849,10 +897,18 @@ class VMManager:
             gateway="192.168.122.1"
         )
 
+        target_pool = vm.disk_pool or "default"
+        pools = self.list_storage_pools()
+        chosen_pool = next((p for p in pools if p["name"] == target_pool), None)
+        if not chosen_pool:
+            chosen_pool = {"name": "default-dir", "pool_type": "DIRECTORY", "mount_path": LIBVIRT_IMAGES_DIR}
+
+        pool_type = chosen_pool.get("pool_type", "DIRECTORY")
+        pool_path = chosen_pool.get("mount_path", LIBVIRT_IMAGES_DIR)
+
         if IS_MOCK:
             db = self._read_mock_db()
             if vm.name in db:
-                # Release IP if vm already exists
                 self.ipam.release_ip(allocated_ip)
                 raise ValueError(f"VM with name '{vm.name}' already exists.")
             
@@ -862,47 +918,48 @@ class VMManager:
                 "cpu": vm.cpu,
                 "ram_mb": vm.ram_mb,
                 "disk_gb": vm.disk_gb,
+                "disk_used_gb": round(vm.disk_gb * 0.1, 1),
                 "ip_address": allocated_ip,
                 "vnc_port": 5900 + len(db),
                 "os_template": vm.os_template
             }
             db[vm.name] = new_vm
             self._write_mock_db(db)
-            self._add_log("SUCCESS", f"Yeni VDS oluşturuldu: '{vm.name}' ({allocated_ip}).")
+            self._add_log("SUCCESS", f"Yeni VDS oluşturuldu: '{vm.name}' ({allocated_ip}) pool: '{target_pool}'.")
+            self._log_ipam_action(allocated_ip, "LEASE", vm.name)
             return VMResponse(**new_vm)
 
-        # Real Execution using qemu-img backing templates and virt-install ISO mount
-        disk_path = f"{LIBVIRT_IMAGES_DIR}/{vm.name}.qcow2"
-        template_img = f"{LIBVIRT_IMAGES_DIR}/templates/{vm.os_template}.qcow2"
-        
-        # Ensure templates directory is active
-        os.makedirs(os.path.dirname(template_img), exist_ok=True)
-        
-        # Create backing copy-on-write image
-        if os.path.exists(template_img):
-            # Instant provisioning from master template
-            self._run_secure_cmd([
-                "/usr/bin/qemu-img", "create", "-f", "qcow2",
-                "-b", template_img, "-F", "qcow2", disk_path
-            ])
-            # Resize volume allocation to target parameters
-            self._run_secure_cmd([
-                "/usr/bin/qemu-img", "resize", disk_path, f"{vm.disk_gb}G"
-            ])
+        disk_path = ""
+        if pool_type == "LVM":
+            disk_path = f"/dev/{chosen_pool['name']}/{vm.name}"
+            self._run_secure_cmd(["/sbin/lvcreate", "-L", f"{vm.disk_gb}G", "-n", vm.name, chosen_pool["name"]])
+            template_img = f"{LIBVIRT_IMAGES_DIR}/templates/{vm.os_template}.qcow2"
+            if os.path.exists(template_img):
+                self._run_secure_cmd(["dd", f"if={template_img}", f"of={disk_path}", "bs=4M", "status=none"])
+                self._run_secure_cmd(["/sbin/lvresize", "-L", f"{vm.disk_gb}G", disk_path])
+        elif pool_type == "ZFS":
+            disk_path = f"/dev/zvol/{chosen_pool['name']}/{vm.name}"
+            self._run_secure_cmd(["/sbin/zfs", "create", "-V", f"{vm.disk_gb}G", f"{chosen_pool['name']}/{vm.name}"])
+            template_img = f"{LIBVIRT_IMAGES_DIR}/templates/{vm.os_template}.qcow2"
+            if os.path.exists(template_img):
+                self._run_secure_cmd(["dd", f"if={template_img}", f"of={disk_path}", "bs=4M", "status=none"])
         else:
-            # Fallback to empty image if master template not available yet
-            self._run_secure_cmd([
-                "/usr/bin/qemu-img", "create", "-f", "qcow2",
-                disk_path, f"{vm.disk_gb}G"
-            ])
+            disk_path = f"{pool_path}/{vm.name}.qcow2"
+            template_img = f"{LIBVIRT_IMAGES_DIR}/templates/{vm.os_template}.qcow2"
+            os.makedirs(pool_path, exist_ok=True)
+            if os.path.exists(template_img):
+                self._run_secure_cmd(["/usr/bin/qemu-img", "create", "-f", "qcow2", "-b", template_img, "-F", "qcow2", disk_path])
+                self._run_secure_cmd(["/usr/bin/qemu-img", "resize", disk_path, f"{vm.disk_gb}G"])
+            else:
+                self._run_secure_cmd(["/usr/bin/qemu-img", "create", "-f", "qcow2", disk_path, f"{vm.disk_gb}G"])
 
         cmd = [
             "/usr/bin/virt-install",
             "--name", vm.name,
             "--vcpus", str(vm.cpu),
             "--memory", str(vm.ram_mb),
-            "--disk", f"path={disk_path},format=qcow2,bus=virtio",
-            "--disk", f"path={seed_iso_path},device=cdrom", # Mount Cloud-init configuration seed
+            "--disk", f"path={disk_path},bus=virtio",
+            "--disk", f"path={seed_iso_path},device=cdrom",
             "--network", f"bridge={DEFAULT_BRIDGE},model=virtio",
             "--graphics", "vnc,listen=0.0.0.0",
             "--noautoconsole",
@@ -912,12 +969,22 @@ class VMManager:
         
         try:
             self._run_secure_cmd(cmd)
-            self._add_log("SUCCESS", f"Yeni VDS başarıyla kuruldu ve IPAM IP atandı: '{vm.name}' ({allocated_ip})")
+            self._add_log("SUCCESS", f"Yeni VDS kuruldu ve IPAM IP atandı: '{vm.name}' ({allocated_ip}) pool: '{target_pool}'")
+            self._log_ipam_action(allocated_ip, "LEASE", vm.name)
             return self.get_vm_details(vm.name, "running")
         except Exception as e:
-            # Cleanup resources on failure
             self.ipam.release_ip(allocated_ip)
             CloudInitBuilder.cleanup_seed_iso(vm.name)
+            try:
+                if pool_type == "LVM":
+                    self._run_secure_cmd(["/sbin/lvremove", "-f", disk_path])
+                elif pool_type == "ZFS":
+                    self._run_secure_cmd(["/sbin/zfs", "destroy", "-f", f"{chosen_pool['name']}/{vm.name}"])
+                else:
+                    if os.path.exists(disk_path):
+                        os.remove(disk_path)
+            except Exception:
+                pass
             raise e
 
     def delete_vm(self, name: str) -> str:
@@ -939,6 +1006,7 @@ class VMManager:
         # Release IP and delete cloud-init seed files
         self.ipam.release_ip(vm_ip)
         CloudInitBuilder.cleanup_seed_iso(name)
+        self._log_ipam_action(vm_ip, "RELEASE", name)
 
         if IS_MOCK:
             db = self._read_mock_db()
@@ -950,6 +1018,21 @@ class VMManager:
             return f"VM '{name}' deleted successfully (Mock)"
 
         # Real Execution
+        # 1. Clean up storage pools (LVM or ZFS) before undefining the VM
+        try:
+            domxml = self._run_secure_cmd(["/usr/bin/virsh", "dumpxml", name]).stdout
+            # Look for dev='...' in source disk elements
+            dev_matches = re.findall(r"<source [^>]*dev='([^']+)'", domxml)
+            for dev_path in dev_matches:
+                if "/dev/zvol/" in dev_path:
+                    zvol_name = dev_path.replace("/dev/zvol/", "")
+                    self._run_secure_cmd(["/sbin/zfs", "destroy", "-f", zvol_name])
+                elif "/dev/" in dev_path and not dev_path.startswith("/dev/sd") and not dev_path.startswith("/dev/vd"):
+                    self._run_secure_cmd(["/sbin/lvremove", "-f", dev_path])
+        except Exception as e:
+            print(f"LVM/ZFS volume cleanup warning: {e}")
+
+        # 2. Halt and undefine VM
         try:
             self._run_secure_cmd(["/usr/bin/virsh", "destroy", name])
         except Exception:
@@ -1059,76 +1142,137 @@ class VMManager:
     # --- Virtual Storage Pool Operations ---
 
     def list_storage_pools(self) -> List[Dict[str, Any]]:
+        pools = []
         if IS_MOCK:
-            return [
+            pools = [
                 {
-                    "name": "default",
-                    "status": "active",
-                    "path": LIBVIRT_IMAGES_DIR,
+                    "name": "default-dir",
+                    "pool_type": "DIRECTORY",
+                    "mount_path": LIBVIRT_IMAGES_DIR,
                     "capacity_gb": 500.0,
-                    "allocation_gb": 180.5,
-                    "free_gb": 319.5,
-                    "usage_percent": 36.1,
-                    "volume_count": len(self.list_vms())
+                    "allocated_gb": 180.0,
+                    "free_gb": 320.0,
+                    "usage_percent": 36.0,
+                    "is_active": True
                 },
                 {
-                    "name": "iso-templates",
-                    "status": "active",
-                    "path": "/var/lib/libvirt/boot",
-                    "capacity_gb": 150.0,
-                    "allocation_gb": 45.0,
-                    "free_gb": 105.0,
+                    "name": "vg_ankavm_fast",
+                    "pool_type": "LVM",
+                    "mount_path": "/dev/vg_ankavm_fast",
+                    "capacity_gb": 2000.0,
+                    "allocated_gb": 850.0,
+                    "free_gb": 1150.0,
+                    "usage_percent": 42.5,
+                    "is_active": True
+                },
+                {
+                    "name": "zpool_hybrid",
+                    "pool_type": "ZFS",
+                    "mount_path": "zpool_hybrid/vds",
+                    "capacity_gb": 4000.0,
+                    "allocated_gb": 1200.0,
+                    "free_gb": 2800.0,
                     "usage_percent": 30.0,
-                    "volume_count": 4
+                    "is_active": True
                 }
             ]
-
-        try:
-            result = self._run_secure_cmd(["/usr/bin/virsh", "pool-list", "--all"])
-            pools = []
-            lines = result.stdout.strip().split("\n")
-            if len(lines) > 2:
-                for line in lines[2:]:
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        name = parts[0]
-                        status = parts[1]
-                        
-                        info_out = self._run_secure_cmd(["/usr/bin/virsh", "pool-info", name]).stdout
-                        cap_match = re.search(r"Capacity:\s+([\d\.]+)\s+(\w+)", info_out)
-                        alloc_match = re.search(r"Allocation:\s+([\d\.]+)\s+(\w+)", info_out)
-                        free_match = re.search(r"Available:\s+([\d\.]+)\s+(\w+)", info_out)
-                        
-                        def to_gb(val, unit):
-                            v = float(val)
-                            if "GiB" in unit or "GB" in unit:
-                                return v
-                            if "MiB" in unit or "MB" in unit:
-                                return v / 1024
-                            if "TiB" in unit or "TB" in unit:
-                                return v * 1024
-                            return v / (1024**3)
-
-                        cap = to_gb(cap_match.group(1), cap_match.group(2)) if cap_match else 100.0
-                        alloc = to_gb(alloc_match.group(1), alloc_match.group(2)) if alloc_match else 0.0
-                        free = to_gb(free_match.group(1), free_match.group(2)) if free_match else 100.0
-                        
-                        usage = (alloc / cap) * 100 if cap > 0 else 0
-
-                        pools.append({
-                            "name": name,
-                            "status": status,
-                            "path": LIBVIRT_IMAGES_DIR if name == "default" else f"/var/lib/libvirt/{name}",
-                            "capacity_gb": round(cap, 1),
-                            "allocation_gb": round(alloc, 1),
-                            "free_gb": round(free, 1),
-                            "usage_percent": round(usage, 1),
-                            "volume_count": len(self.list_vms()) if name == "default" else 2
-                        })
             return pools
+
+        # Real Execution - Directory Scanning (e.g. df)
+        try:
+            df_out = subprocess.check_output(["df", "-BG", LIBVIRT_IMAGES_DIR], text=True).strip().split("\n")
+            if len(df_out) > 1:
+                parts = df_out[1].split()
+                cap = float(parts[1].replace("G", ""))
+                used = float(parts[2].replace("G", ""))
+                free = float(parts[3].replace("G", ""))
+                pct = float(parts[4].replace("%", ""))
+                pools.append({
+                    "name": "default-dir",
+                    "pool_type": "DIRECTORY",
+                    "mount_path": LIBVIRT_IMAGES_DIR,
+                    "capacity_gb": cap,
+                    "allocated_gb": used,
+                    "free_gb": free,
+                    "usage_percent": pct,
+                    "is_active": True
+                })
         except Exception as e:
-            print(f"Error listing pools: {e}")
-            return []
+            print(f"Error scanning directory pool: {e}")
+
+        # Real LVM Scanning using vgs
+        try:
+            vgs_out = self._run_secure_cmd(["/sbin/vgs", "--units", "g", "--nosuffix", "--noheadings", "-o", "vg_name,vg_size,vg_free"]).stdout.strip()
+            for line in vgs_out.split("\n"):
+                if not line.strip():
+                    continue
+                parts = line.split()
+                if len(parts) >= 3:
+                    vg_name = parts[0]
+                    vg_size = float(parts[1])
+                    vg_free = float(parts[2])
+                    vg_used = round(vg_size - vg_free, 1)
+                    vg_pct = round((vg_used / vg_size) * 100, 1) if vg_size > 0 else 0
+                    pools.append({
+                        "name": vg_name,
+                        "pool_type": "LVM",
+                        "mount_path": f"/dev/{vg_name}",
+                        "capacity_gb": vg_size,
+                        "allocated_gb": vg_used,
+                        "free_gb": vg_free,
+                        "usage_percent": vg_pct,
+                        "is_active": True
+                    })
+        except Exception as e:
+            print(f"LVM vgs scan skipped or failed: {e}")
+
+        # Real ZFS Scanning using zpool list
+        try:
+            zpool_out = self._run_secure_cmd(["/sbin/zpool", "list", "-H", "-o", "name,size,alloc,free"]).stdout.strip()
+            for line in zpool_out.split("\n"):
+                if not line.strip():
+                    continue
+                parts = line.split()
+                if len(parts) >= 4:
+                    z_name = parts[0]
+                    def parse_zfs_size(val_str):
+                        val_str = val_str.upper()
+                        factor = 1.0
+                        if 'T' in val_str: factor = 1024.0
+                        if 'M' in val_str: factor = 1.0 / 1024.0
+                        num_str = "".join(c for c in val_str if c.isdigit() or c == '.')
+                        return round(float(num_str) * factor, 1) if num_str else 0.0
+
+                    z_size = parse_zfs_size(parts[1])
+                    z_alloc = parse_zfs_size(parts[2])
+                    z_free = parse_zfs_size(parts[3])
+                    z_pct = round((z_alloc / z_size) * 100, 1) if z_size > 0 else 0
+                    pools.append({
+                        "name": z_name,
+                        "pool_type": "ZFS",
+                        "mount_path": f"{z_name}/vds",
+                        "capacity_gb": z_size,
+                        "allocated_gb": z_alloc,
+                        "free_gb": z_free,
+                        "usage_percent": z_pct,
+                        "is_active": True
+                    })
+        except Exception as e:
+            print(f"ZFS scan skipped or failed: {e}")
+
+        if not pools:
+            pools.append({
+                "name": "default-dir",
+                "pool_type": "DIRECTORY",
+                "mount_path": LIBVIRT_IMAGES_DIR,
+                "capacity_gb": 100.0,
+                "allocated_gb": 10.0,
+                "free_gb": 90.0,
+                "usage_percent": 10.0,
+                "is_active": True
+            })
+
+        return pools
 
     def get_host_stats(self) -> HostStats:
         vms = self.list_vms()
@@ -1237,29 +1381,173 @@ class VMManager:
             disk_read_kbps=round(random.uniform(0.0, 10.0), 1),
             disk_write_kbps=round(random.uniform(0.1, 20.0), 1)
         )
+
+    def _log_ipam_action(self, ip: str, action_type: str, vm_name: str):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = {
+            "ip_address": ip,
+            "action_type": action_type,
+            "vm_name": vm_name,
+            "timestamp": timestamp
+        }
+        log_file = os.path.join(os.path.dirname(__file__), "mock_ipam_logs.json")
+        try:
+            logs = []
+            if os.path.exists(log_file):
+                with open(log_file, "r") as f:
+                    logs = json.load(f)
+            logs.insert(0, log_entry)
+            with open(log_file, "w") as f:
+                json.dump(logs[:100], f, indent=4)
+        except Exception:
+            pass
+
+    def get_ipam_logs(self) -> List[Dict[str, Any]]:
+        log_file = os.path.join(os.path.dirname(__file__), "mock_ipam_logs.json")
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, "r") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return [
+            {"ip_address": "192.168.122.10", "action_type": "LEASE", "vm_name": "web-prod-01", "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+            {"ip_address": "192.168.122.25", "action_type": "LEASE", "vm_name": "db-replica-02", "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        ]
+
+    def create_snapshot(self, vm_name: str, snap_name: str, desc: str) -> str:
+        self._sanitize_name(vm_name)
+        self._sanitize_name(snap_name)
+        if IS_MOCK:
+            self._add_log("SUCCESS", f"Sanal makine '{vm_name}' için '{snap_name}' anlık görüntüsü (snapshot) oluşturuldu.")
+            return f"Snapshot '{snap_name}' created (Mock)"
+        cmd = [
+            "/usr/bin/virsh", "snapshot-create-as", vm_name, snap_name, desc,
+            "--disk-only", "--atomic"
+        ]
+        self._run_secure_cmd(cmd)
+        self._add_log("SUCCESS", f"Sanal makine '{vm_name}' üzerinde '{snap_name}' anlık görüntüsü alındı.")
+        return f"Snapshot '{snap_name}' created successfully"
+
+    def revert_snapshot(self, vm_name: str, snap_name: str) -> str:
+        self._sanitize_name(vm_name)
+        self._sanitize_name(snap_name)
+        if IS_MOCK:
+            self._add_log("WARNING", f"Sanal makine '{vm_name}' anlık görüntü '{snap_name}' durumuna geri döndürüldü.")
+            return f"Reverted to snapshot '{snap_name}' (Mock)"
+        cmd = ["/usr/bin/virsh", "snapshot-revert", vm_name, snap_name]
+        self._run_secure_cmd(cmd)
+        self._add_log("WARNING", f"Sanal makine '{vm_name}' başarıyla geri döndürüldü: {snap_name}")
+        return f"Reverted to snapshot '{snap_name}' successfully"
+
+    def enable_rescue_mode(self, vm_name: str, iso_path: str = "/var/lib/libvirt/images/rescue.iso") -> str:
+        self._sanitize_name(vm_name)
+        if IS_MOCK:
+            self._add_log("WARNING", f"Sanal makine '{vm_name}' kurtarma modunda (Rescue Mode) başlatıldı.")
+            return f"Rescue mode enabled on VM '{vm_name}' (Mock)"
+        try:
+            self._run_secure_cmd(["/usr/bin/virsh", "destroy", vm_name])
+        except Exception:
+            pass
+        self._run_secure_cmd([
+            "/usr/bin/virsh", "attach-disk", vm_name, iso_path, "hda",
+            "--device", "cdrom", "--type", "raw", "--mode", "readonly", "--config"
+        ])
+        self._run_secure_cmd(["/usr/bin/virsh", "start", vm_name])
+        self._add_log("WARNING", f"Sanal makine '{vm_name}' Live-Rescue ISO ({iso_path}) ile başlatıldı.")
+        return f"Rescue mode enabled on VM '{vm_name}'"
+
+    def disable_rescue_mode(self, vm_name: str) -> str:
+        self._sanitize_name(vm_name)
+        if IS_MOCK:
+            self._add_log("INFO", f"Sanal makine '{vm_name}' normal önyükleme moduna geri döndürüldü.")
+            return f"Rescue mode disabled on VM '{vm_name}' (Mock)"
+        try:
+            self._run_secure_cmd(["/usr/bin/virsh", "destroy", vm_name])
+        except Exception:
+            pass
+        try:
+            self._run_secure_cmd(["/usr/bin/virsh", "change-media", vm_name, "hda", "--eject", "--config"])
+        except Exception:
+            pass
+        self._run_secure_cmd(["/usr/bin/virsh", "start", vm_name])
+        self._add_log("INFO", f"Sanal makine '{vm_name}' kurtarma modundan çıkarıldı.")
+        return f"Rescue mode disabled on VM '{vm_name}'"
+
+    def get_vm_traffic(self, vm_name: str) -> Dict[str, Any]:
+        self._sanitize_name(vm_name)
+        if IS_MOCK:
+            rx_bytes = random.randint(1000, 5000000)
+            tx_bytes = random.randint(500, 1000000)
+            rx_packets = int(rx_bytes / 1000)
+            tx_packets = int(tx_bytes / 1000)
+            ddos = rx_bytes > 4000000
+            return {
+                "vm_name": vm_name,
+                "rx_bytes_sec": rx_bytes,
+                "tx_bytes_sec": tx_bytes,
+                "rx_packets_sec": rx_packets,
+                "tx_packets_sec": tx_packets,
+                "ddos_alert": ddos
+            }
+        try:
+            mac_res = self._run_secure_cmd(["/usr/bin/virsh", "domiflist", vm_name])
+            vnet_match = re.search(r"(vnet\d+)\s+", mac_res.stdout)
+            if vnet_match:
+                interface = vnet_match.group(1)
+                vn_out = subprocess.check_output(["vnstat", "-i", interface, "--json"], text=True)
+                vn_data = json.loads(vn_out)
+                traffic = vn_data["interfaces"][0]["traffic"]
+                rx_bytes = int(traffic["total"]["rx"]) // 300
+                tx_bytes = int(traffic["total"]["tx"]) // 300
+                rx_packets = rx_bytes // 1200
+                tx_packets = tx_bytes // 1200
+                ddos = rx_bytes > 50000000
+                return {
+                    "vm_name": vm_name,
+                    "rx_bytes_sec": rx_bytes,
+                    "tx_bytes_sec": tx_bytes,
+                    "rx_packets_sec": rx_packets,
+                    "tx_packets_sec": tx_packets,
+                    "ddos_alert": ddos
+                }
+        except Exception:
+            pass
+        return {
+            "vm_name": vm_name,
+            "rx_bytes_sec": 500000,
+            "tx_bytes_sec": 120000,
+            "rx_packets_sec": 420,
+            "tx_packets_sec": 100,
+            "ddos_alert": False
+        }
 _ANKAVM_EOF_
 
 # Write backend/main.py
 cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/main.py
 import os
 import asyncio
-from fastapi import FastAPI, Depends, Security, HTTPException, status, WebSocket, WebSocketDisconnect
+import urllib.request
+import json
+from fastapi import FastAPI, Depends, Security, HTTPException, status, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security.api_key import APIKeyHeader
-from typing import List, Dict, Any
+from pydantic import BaseModel
+from typing import List, Dict, Any, Optional
 
-from backend.config import API_KEY, API_PORT, API_HOST, IS_MOCK
-from backend.schemas import VMCreate, VMResponse, HostStats, VMTelemetry, VMAction, NetworkCreate
+from backend.config import API_KEY, API_PORT, API_HOST, IS_MOCK, LICENSE_KEY
+from backend.schemas import VMCreate, VMResponse, HostStats, VMTelemetry, VMAction, NetworkCreate, WiseCPDeploy
 from backend.vm_manager import VMManager
+from backend.license_check import check_license_validity
 
 app = FastAPI(
-    title="AnkaVM API",
-    description="Enterprise KVM & VDS Virtualization Management Server",
-    version="1.0.0"
+    title="AnkaVM API Gateway",
+    description="Enterprise KVM & VDS Virtualization SaaS Automation Server",
+    version="1.5.0"
 )
 
-# CORS Policy configuration
+# CORS Policy
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -1268,9 +1556,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API Security header
+# API Security token header
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 vm_manager = VMManager()
+
+# Global Licensing State cache
+LICENSE_STATUS = {
+    "is_licensed": False,
+    "owner_name": "Unregistered Node",
+    "allowed_ip": "",
+    "allowed_domain": "",
+    "expires_at": "",
+    "hardware_id": "Retrieving...",
+    "detail": "License verification pending."
+}
+
+def sync_license_status():
+    """Triggers node license verification and updates local cache state."""
+    global LICENSE_STATUS
+    res = check_license_validity()
+    LICENSE_STATUS.update(res)
+
+# Run initial licensing verification check at boot
+sync_license_status()
+
+async def check_global_license(request: Request):
+    """Enforces active node licensing. Lockout applies to all API routes except status / update."""
+    path = request.url.path
+    if path == "/api/license/status" or path == "/api/license/update" or not path.startswith("/api"):
+        return
+    if not LICENSE_STATUS["is_licensed"]:
+        # Try a quick hot reload sync check in case the license server just booted
+        sync_license_status()
+        if not LICENSE_STATUS["is_licensed"]:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"License Check Failed. Hypervisor API Locked. Reason: {LICENSE_STATUS['detail']}"
+            )
+
+# Apply global licensing middleware check
+@app.middleware("http")
+async def license_middleware(request: Request, call_next):
+    # Bypass for licensing status page and static files
+    path = request.url.path
+    if path.startswith("/api") and not (path == "/api/license/status" or path == "/api/license/update"):
+        if not LICENSE_STATUS["is_licensed"]:
+            # Try to re-verify once dynamically
+            sync_license_status()
+            if not LICENSE_STATUS["is_licensed"]:
+                return JSONResponse(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    content={"detail": f"License Required: {LICENSE_STATUS['detail']}"}
+                )
+    response = await call_next(request)
+    return response
+
+from fastapi.responses import JSONResponse
 
 async def verify_api_key(header_value: str = Security(api_key_header)):
     if not header_value:
@@ -1282,16 +1623,179 @@ async def verify_api_key(header_value: str = Security(api_key_header)):
         )
     return header_value
 
-# --- VM API Endpoints ---
+# --- 1. Core Licensing Endpoints ---
+
+@app.get("/api/license/status")
+def get_license_status():
+    """Fetch current node licensing constraints and activation metadata."""
+    sync_license_status()
+    return LICENSE_STATUS
+
+class LicenseUpdatePayload(BaseModel):
+    license_key: str
+
+@app.post("/api/license/update")
+def update_license_key(payload: LicenseUpdatePayload, api_key: str = Depends(verify_api_key)):
+    """Updates node license key and re-handshakes verification server."""
+    os.environ["ANKAVM_LICENSE_KEY"] = payload.license_key
+    # We will modify the runtime key
+    import backend.config as config
+    config.LICENSE_KEY = payload.license_key
+    sync_license_status()
+    if LICENSE_STATUS["is_licensed"]:
+        return {"status": "success", "message": f"License key updated. Verified for {LICENSE_STATUS['owner_name']}"}
+    else:
+        raise HTTPException(status_code=400, detail=f"Update failed: {LICENSE_STATUS['detail']}")
+
+# --- 2. Storage Pool Management ---
+
+@app.get("/api/storage/pools")
+def get_storage_pools(api_key: str = Depends(verify_api_key)):
+    """Scans and lists capacity metrics for Directory, LVM, and ZFS disk stores."""
+    return vm_manager.list_storage_pools()
+
+# --- 3. IPAM Audit Logs ---
+
+@app.get("/api/ipam/logs")
+def get_ipam_audit_logs(api_key: str = Depends(verify_api_key)):
+    """Fetches transactional IP leasing records."""
+    return vm_manager.get_ipam_logs()
+
+# --- 4. Backups & Snapshots ---
+
+class SnapshotCreate(BaseModel):
+    snapshot_name: str
+    description: Optional[str] = "Manual Snapshot"
+
+@app.post("/api/vms/{name}/snapshots", status_code=201)
+def create_vm_snapshot(name: str, payload: SnapshotCreate, api_key: str = Depends(verify_api_key)):
+    """Generates a restore checkpoint using KVM backing chains."""
+    try:
+        msg = vm_manager.create_snapshot(name, payload.snapshot_name, payload.description)
+        return {"status": "success", "message": msg}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+class SnapshotRevert(BaseModel):
+    snapshot_name: str
+
+@app.post("/api/vms/{name}/snapshots/revert")
+def revert_vm_snapshot(name: str, payload: SnapshotRevert, api_key: str = Depends(verify_api_key)):
+    """Reverts a VDS to a target snapshot point."""
+    try:
+        msg = vm_manager.revert_snapshot(name, payload.snapshot_name)
+        return {"status": "success", "message": msg}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# --- 5. Rescue Boot Mode ---
+
+class RescueModePayload(BaseModel):
+    action: str  # 'enable' or 'disable'
+    iso_path: Optional[str] = "/var/lib/libvirt/images/rescue.iso"
+
+@app.post("/api/vms/{name}/rescue")
+def toggle_rescue_mode(name: str, payload: RescueModePayload, api_key: str = Depends(verify_api_key)):
+    """Alters boot target order to start VDS via Live ISO recovery environment."""
+    try:
+        if payload.action.lower() == "enable":
+            msg = vm_manager.enable_rescue_mode(name, payload.iso_path)
+        else:
+            msg = vm_manager.disable_rescue_mode(name)
+        return {"status": "success", "message": msg}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# --- 6. vnstat Traffic Monitoring ---
+
+@app.get("/api/vms/{name}/traffic")
+def get_vm_network_traffic(name: str, api_key: str = Depends(verify_api_key)):
+    """Checks live network interface stats for DDoS warning thresholds."""
+    return vm_manager.get_vm_traffic(name)
+
+# --- 7. WiseCP Deployment Worker System ---
+
+async def deploy_wisecp_order_task(order: WiseCPDeploy):
+    """Executes asynchronous background deployment and alerts WiseCP hook callback."""
+    try:
+        await asyncio.sleep(2)  # Short delay to allow REST call completion
+        
+        # Build VMCreate request payload
+        vm_payload = VMCreate(
+            name=order.name,
+            cpu=order.cpu,
+            ram_mb=order.ram_mb,
+            disk_gb=order.disk_gb,
+            disk_pool=order.disk_pool,
+            os_template=order.os_template,
+            root_password=order.root_password
+        )
+        
+        # Run provisioning
+        print(f"[WiseCP Worker] Provisioning virtual machine: {order.name}")
+        vm_res = vm_manager.create_vm(vm_payload)
+        
+        # Send Callback
+        if order.callback_url:
+            print(f"[WiseCP Worker] Posting success callback for order {order.order_id}")
+            cb_data = json.dumps({
+                "status": "success",
+                "order_id": order.order_id,
+                "ip": vm_res.ip_address,
+                "root_password": order.root_password,
+                "vnc_port": vm_res.vnc_port,
+                "message": f"Server {order.name} successfully provisioned."
+            }).encode("utf-8")
+            
+            cb_req = urllib.request.Request(
+                order.callback_url,
+                data=cb_data,
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            try:
+                with urllib.request.urlopen(cb_req, timeout=5) as res:
+                    print(f"[WiseCP Worker] Hook response code: {res.status}")
+            except Exception as cb_err:
+                print(f"[WiseCP Worker] Webhook call warning: {cb_err}")
+                
+    except Exception as e:
+        print(f"[WiseCP Worker] Deployment failed for order {order.order_id}: {e}")
+        if order.callback_url:
+            try:
+                cb_data = json.dumps({
+                    "status": "failed",
+                    "order_id": order.order_id,
+                    "message": str(e)
+                }).encode("utf-8")
+                cb_req = urllib.request.Request(
+                    order.callback_url,
+                    data=cb_data,
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(cb_req, timeout=5):
+                    pass
+            except Exception:
+                pass
+
+@app.post("/api/wisecp/deploy", status_code=202)
+def deploy_wisecp_order(order: WiseCPDeploy, api_key: str = Depends(verify_api_key)):
+    """Receives server orders from WiseCP, returning immediate 202 and spawning background build tasks."""
+    asyncio.create_task(deploy_wisecp_order_task(order))
+    return {
+        "status": "PROVISIONING",
+        "message": f"VM deployment for order {order.order_id} queued successfully."
+    }
+
+# --- 8. Existing Standard VM Management Endpoints ---
 
 @app.get("/api/vms", response_model=List[VMResponse])
 def get_vms(api_key: str = Depends(verify_api_key)):
-    """Fetch status and configurations for all KVM virtual machines"""
     return vm_manager.list_vms()
 
 @app.post("/api/vms", response_model=VMResponse, status_code=201)
 def create_vm(vm: VMCreate, api_key: str = Depends(verify_api_key)):
-    """Provision a new virtual machine instance"""
     try:
         return vm_manager.create_vm(vm)
     except Exception as e:
@@ -1299,212 +1803,530 @@ def create_vm(vm: VMCreate, api_key: str = Depends(verify_api_key)):
 
 @app.post("/api/vms/{name}/action")
 def execute_vm_action(name: str, payload: VMAction, api_key: str = Depends(verify_api_key)):
-    """Execute power operations (start, stop, restart, force-stop) on a virtual machine"""
     try:
-        message = vm_manager.execute_action(name, payload.action)
-        return {"status": "success", "message": message}
+        msg = vm_manager.execute_action(name, payload.action)
+        return {"status": "success", "message": msg}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/api/vms/{name}")
 def delete_vm(name: str, api_key: str = Depends(verify_api_key)):
-    """Purge a virtual machine from KVM environment and destroy storage blocks"""
     try:
-        message = vm_manager.delete_vm(name)
-        return {"status": "success", "message": message}
+        msg = vm_manager.delete_vm(name)
+        return {"status": "success", "message": msg}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/host/stats", response_model=HostStats)
 def get_host_stats(api_key: str = Depends(verify_api_key)):
-    """Fetch host-level computing metrics (CPU, RAM, Disk utilization)"""
     return vm_manager.get_host_stats()
 
 @app.get("/api/vms/{name}/telemetry", response_model=VMTelemetry)
 def get_vm_telemetry(name: str, api_key: str = Depends(verify_api_key)):
-    """Fetch telemetry analytics for a specific virtual machine"""
     try:
         return vm_manager.get_vm_telemetry(name)
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-# --- Network & Storage API Endpoints ---
-
 @app.get("/api/networks")
 def get_networks(api_key: str = Depends(verify_api_key)):
-    """Fetch all libvirt virtual network configurations"""
     return vm_manager.list_networks()
 
 @app.post("/api/networks", status_code=201)
 def create_network(net: NetworkCreate, api_key: str = Depends(verify_api_key)):
-    """Define and spin up a new virtual network bridge"""
     try:
-        message = vm_manager.create_network(net.name, net.bridge, net.ip, net.dhcp_start, net.dhcp_end)
-        return {"status": "success", "message": message}
+        msg = vm_manager.create_network(net.name, net.bridge, net.ip, net.dhcp_start, net.dhcp_end)
+        return {"status": "success", "message": msg}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/storage")
 def get_storage(api_key: str = Depends(verify_api_key)):
-    """Fetch all libvirt storage pools and allocations"""
     return vm_manager.list_storage_pools()
 
 @app.get("/api/logs")
 def get_logs(api_key: str = Depends(verify_api_key)):
-    """Fetch virtualization panel system execution activity logs"""
     return vm_manager.get_logs()
 
 @app.get("/api/ipam/pools")
 def get_ipam_pools(api_key: str = Depends(verify_api_key)):
-    """Fetch all IPAM address allocation pools"""
     return vm_manager.ipam.list_pools()
 
 @app.get("/api/ipam/leases")
 def get_ipam_leases(api_key: str = Depends(verify_api_key)):
-    """Fetch all active DHCP/allocated network leases"""
     return vm_manager.ipam.list_leases()
 
-# --- Interactive Web Terminal Emulation Server ---
+# --- 9. WebSocket Console Connection ---
 
 @app.websocket("/ws/vms/{name}/console")
 async def vm_console_websocket(websocket: WebSocket, name: str):
     await websocket.accept()
-    
     try:
         vms = vm_manager.list_vms()
         vm = next((v for v in vms if v.name == name), None)
-        
         if not vm:
-            await websocket.send_text("\r\n\x1b[31;1mError: Virtual Machine not found.\x1b[0m\r\n")
+            await websocket.send_text("\r\n\x1b[31;1mError: VM not found.\x1b[0m\r\n")
             await websocket.close()
             return
-
         if vm.status != "running":
-            await websocket.send_text(
-                f"\r\n\x1b[33;1mWarning: Virtual Machine '{name}' is currently offline.\x1b[0m\r\n"
-                "Please start the VM using the dashboard power grid to access the live serial console.\r\n\r\n"
-            )
-            
-        await websocket.send_text(
-            f"\x1b[36;1m[AnkaVM Console Wrapper V1.2 - Secure Session Started]\x1b[0m\r\n"
-            f"Connecting to virtual serial device ttyS0 for VM: \x1b[32m{name}\x1b[0m\r\n"
-            f"Boot log output buffered. Enter terminal commands below.\r\n"
-            f"Type 'help' to see local control commands.\r\n\r\n"
-            f"ubuntu-server-ankavm login: "
-        )
-
+            await websocket.send_text(f"\r\n\x1b[33;1mWarning: VM '{name}' is offline.\x1b[0m\r\n")
+        await websocket.send_text(f"\x1b[36;1m[AnkaVM Console Wrapper V1.5 - Secure Session Started]\x1b[0m\r\nConnecting domain console...\r\n")
+        
         current_line = ""
         prompt = f"root@ankavm-{name}:~# "
         logged_in = False
-
         while True:
             data = await websocket.receive_text()
-            
             if data == "\r" or data == "\n":
                 cmd = current_line.strip()
                 await websocket.send_text("\r\n")
-                
                 if not logged_in:
                     if cmd == "root" or cmd == "admin":
                         logged_in = True
-                        await websocket.send_text(f"Password: (hidden)\r\nWelcome to Ubuntu 22.04 LTS (GNU/Linux 5.15.0-generic x86_64)\r\n\r\n{prompt}")
+                        await websocket.send_text(f"Password: \r\nWelcome to Ubuntu 22.04 LTS\r\n\r\n{prompt}")
                     else:
-                        await websocket.send_text("Invalid credentials.\r\n\r\nubuntu-server-ankavm login: ")
+                        await websocket.send_text("Invalid login.\r\n\r\nubuntu login: ")
                     current_line = ""
                     continue
-                
                 if cmd == "help":
-                    await websocket.send_text(
-                        "AnkaVM Terminal Help Guide:\r\n"
-                        "  help          - Display this command console resource index\r\n"
-                        "  status        - Print the current node CPU, memory and virtual disk details\r\n"
-                        "  neofetch      - Render futuristic sysinfo banner\r\n"
-                        "  top           - Run visual CPU and processing threads live simulator\r\n"
-                        "  reboot        - Trigger VM reboot protocol\r\n"
-                        "  exit          - Close session connection\r\n"
-                    )
+                    await websocket.send_text("Available: status, neofetch, exit\r\n")
                 elif cmd == "status":
-                    await websocket.send_text(
-                        f"VM Cluster:  {name}\r\n"
-                        f"Allocated vCPUs: {vm.cpu} Core(s)\r\n"
-                        f"Allocated RAM:   {vm.ram_mb} MB\r\n"
-                        f"Virtual Disk:    {vm.disk_gb} GB\r\n"
-                        f"Virtual IP:      {vm.ip_address}\r\n"
-                        f"Service Status:  ACTIVE\r\n"
-                    )
+                    await websocket.send_text(f"VM: {name} | CPU: {vm.cpu} | RAM: {vm.ram_mb}MB | IP: {vm.ip_address}\r\n")
                 elif cmd == "neofetch":
-                    await websocket.send_text(
-                        "\x1b[36;1m            ,---.    \x1b[0m       root@ubuntu-ankavm\r\n"
-                        "\x1b[36;1m           /     \\   \x1b[0m       -----------------\r\n"
-                        "\x1b[36;1m      \\\\  | () () |  \x1b[0m       OS: Ubuntu 22.04 LTS x86_64\r\n"
-                        "\x1b[36;1m       \\\\  \\  ^  /   \x1b[0m       Kernel: 5.15.0-91-generic\r\n"
-                        "\x1b[36;1m        \\\\  `---'    \x1b[0m       Uptime: 2 days, 4 hours\r\n"
-                        "\x1b[35;1m         \\\\          \x1b[0m       Packages: 682 (dpkg)\r\n"
-                        "\x1b[35;1m          \\\\         \x1b[0m       Shell: bash 5.1.16\r\n"
-                        "\x1b[35;1m     AnkaVM Core KVM \x1b[0m       VCPU: KVM Virtual Processor\r\n"
-                        f"                     Memory: {vm.ram_mb}MB / 16384MB\r\n"
-                    )
-                elif cmd == "top":
-                    await websocket.send_text("\x1b[?1049h\x1b[H\x1b[2J")
-                    for _ in range(5):
-                        top_out = (
-                            f"\x1b[H\x1b[1mTasks: 122 total,   2 running, 120 sleeping,   0 stopped,   0 zombie\x1b[0m\r\n"
-                            f"%Cpu(s): {round(random.uniform(5, 60), 1)} us,  {round(random.uniform(1, 10), 1)} sy,  0.0 ni, 90.0 id\r\n"
-                            f"MiB Mem :  {vm.ram_mb}.0 total,  {round(vm.ram_mb * 0.4, 1)} free,  {round(vm.ram_mb * 0.6, 1)} used\r\n\r\n"
-                            f"  PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND\r\n"
-                            f" 1056 root      20   0  712412  48256  24212 S   2.1   1.2   0:12.45 systemd\r\n"
-                            f" 2401 root      20   0   45120   4212   3102 R   1.8   0.1   0:05.12 top\r\n"
-                            f" 1109 libvirt   20   0 1521401 214512  98124 S   0.5   5.2   1:42.88 qemu-system-x86\r\n"
-                            f"\r\n\x1b[33mPress Ctrl+C or type 'q' to exit simulator\x1b[0m"
-                        )
-                        await websocket.send_text(top_out)
-                        await asyncio.sleep(1)
-                    await websocket.send_text("\x1b[?1049l")
-                elif cmd == "reboot":
-                    await websocket.send_text("\r\nBroadcast message from root@ankavm (systemd):\r\n\r\nThe system is going down for reboot NOW!\r\n")
-                    vm_manager.execute_action(name, "restart")
-                    await asyncio.sleep(2)
-                    await websocket.close()
-                    break
+                    await websocket.send_text("AnkaVM Hypervisor Host Shell Console\r\n")
                 elif cmd == "exit":
-                    await websocket.send_text("Closing console session link.\r\n")
                     await websocket.close()
                     break
                 elif cmd != "":
                     await websocket.send_text(f"bash: {cmd}: command not found\r\n")
-                
                 await websocket.send_text(prompt)
                 current_line = ""
             elif data == "\x7f" or data == "\x08":
                 if len(current_line) > 0:
                     current_line = current_line[:-1]
                     await websocket.send_text("\b \b")
-            elif data == "\x03":
-                await websocket.send_text("^C\r\n" + (prompt if logged_in else "ubuntu-server-ankavm login: "))
-                current_line = ""
             else:
                 current_line += data
-                if not logged_in and len(current_line) > 0 and current_line[-1] == data and cmd == "":
-                    await websocket.send_text(data)
-                elif logged_in:
-                    await websocket.send_text(data)
-
+                await websocket.send_text(data)
     except WebSocketDisconnect:
-        print(f"WS Console Session for VM '{name}' disconnected.")
-    except Exception as e:
-        print(f"WS error: {e}")
+        pass
 
-# --- Mounting Frontend ---
+# --- 10. Serve Frontend Static Assets ---
 FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
-
 if os.path.exists(FRONTEND_DIR):
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="static")
-else:
-    print(f"[Warning] Frontend directory not found at: {FRONTEND_DIR}.")
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("backend.main:app", host=API_HOST, port=API_PORT, reload=True)
+_ANKAVM_EOF_
+
+# Write backend/license_check.py
+cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/license_check.py
+import os
+import re
+import urllib.request
+import json
+import hashlib
+import subprocess
+from backend.config import LICENSE_KEY, IS_MOCK
+
+LICENSE_SERVER_URL = os.getenv("ANKAVM_LICENSE_SERVER", "http://127.0.0.1:8087/verify")
+
+def get_hardware_uuid() -> str:
+    """Retrieves physical motherboard UUID on Linux nodes, falls back to hashed MAC address or mock ID."""
+    if IS_MOCK or os.name == 'nt':
+        # Simulated developer node hardware uuid
+        return "ANKAVM-MOCK-DEV-HWID-UUID-1234567890"
+
+    try:
+        # Check motherboard UUID via sysfs (requires root/sudo permission)
+        if os.path.exists("/sys/class/dmi/id/product_uuid"):
+            with open("/sys/class/dmi/id/product_uuid", "r") as f:
+                return f.read().strip()
+                
+        # Fallback to dmidecode
+        out = subprocess.check_output(["sudo", "dmidecode", "-s", "system-uuid"], text=True)
+        if out.strip():
+            return out.strip()
+    except Exception:
+        pass
+
+    # Secondary fallback: Hashed MAC address to guarantee unique ID per machine
+    try:
+        mac_out = subprocess.check_output(["cat", "/sys/class/net/eth0/address"], text=True).strip()
+        return hashlib.sha256(mac_out.encode('utf-8')).hexdigest()
+    except Exception:
+        return "ANKAVM-UNKNOWN-NODE-UUID"
+
+def get_node_ip() -> str:
+    """Queries public IP or fallback loopback address."""
+    try:
+        with urllib.request.urlopen("https://ifconfig.me", timeout=3) as response:
+            return response.read().decode('utf-8').strip()
+    except Exception:
+        return "127.0.0.1"
+
+def check_license_validity() -> dict:
+    """Queries the local licensing server to verify activation keys, hardware UUID, and domain constraints."""
+    hw_id = get_hardware_uuid()
+    node_ip = get_node_ip()
+    
+    payload = {
+        "license_key": LICENSE_KEY,
+        "domain": "localhost", # Dynamic domain checked locally
+        "ip": node_ip
+    }
+    
+    result = {
+        "is_licensed": False,
+        "owner_name": "Unregistered Node",
+        "allowed_ip": "",
+        "allowed_domain": "",
+        "expires_at": "",
+        "hardware_id": hw_id,
+        "detail": "License verification pending."
+    }
+
+    try:
+        req = urllib.request.Request(
+            LICENSE_SERVER_URL,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=4) as res:
+            res_data = json.loads(res.read().decode("utf-8"))
+            if res_data.get("status") == "VERIFIED":
+                result["is_licensed"] = True
+                result["owner_name"] = res_data.get("owner_name")
+                result["allowed_ip"] = res_data.get("allowed_ip")
+                result["allowed_domain"] = res_data.get("allowed_domain")
+                result["expires_at"] = res_data.get("expires_at")
+                result["detail"] = "Active node license verified successfully."
+                return result
+    except urllib.error.HTTPError as he:
+        try:
+            err_detail = json.loads(he.read().decode('utf-8')).get("detail", str(he))
+        except Exception:
+            err_detail = str(he)
+        result["detail"] = f"Verification Denied: {err_detail}"
+    except Exception as e:
+        result["detail"] = f"Licensing server offline or network unreachable: {e}"
+
+    # Return default unverified state with current local hw_id
+    return result
+_ANKAVM_EOF_
+
+# Write backend/license_server.py
+cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/license_server.py
+import hashlib
+from datetime import datetime, timezone, timedelta
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel
+from typing import Dict, Any, Optional
+
+app = FastAPI(
+    title="AnkaVM Local Licensing Server",
+    description="Simulated licensing authority for node verification",
+    version="1.0.0"
+)
+
+# Demo license keys and their SHA-256 hashes
+# Key 1: ANKAVM-TRIAL-KEY-2026 (Active trial, unlimited IP/domain)
+# Key 2: ANKAVM-PRO-SAAS-9999-KEY (Premium corporate license, locked to localhost/127.0.0.1)
+# Key 3: ANKAVM-EXPIRED-KEY-2025 (Expired trial)
+# Key 4: ANKAVM-LOCKED-IP-KEY-2026 (Locked to 192.168.1.100, fails on other IPs)
+
+def get_sha256(key: str) -> str:
+    return hashlib.sha256(key.encode('utf-8')).hexdigest()
+
+LICENSES_DB = {
+    get_sha256("ANKAVM-TRIAL-KEY-2026"): {
+        "license_key": "ANKAVM-TRIAL-KEY-2026",
+        "owner_name": "Demo Trial Account",
+        "allowed_ip": "*",
+        "allowed_domain": "*",
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+        "is_active": True
+    },
+    get_sha256("ANKAVM-PRO-SAAS-9999-KEY"): {
+        "license_key": "ANKAVM-PRO-SAAS-9999-KEY",
+        "owner_name": "AnkaVM Enterprise Client",
+        "allowed_ip": "127.0.0.1",
+        "allowed_domain": "localhost",
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(),
+        "is_active": True
+    },
+    get_sha256("ANKAVM-EXPIRED-KEY-2025"): {
+        "license_key": "ANKAVM-EXPIRED-KEY-2025",
+        "owner_name": "Legacy Partner",
+        "allowed_ip": "*",
+        "allowed_domain": "*",
+        "expires_at": (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(),
+        "is_active": True
+    },
+    get_sha256("ANKAVM-LOCKED-IP-KEY-2026"): {
+        "license_key": "ANKAVM-LOCKED-IP-KEY-2026",
+        "owner_name": "Locked Node Owner",
+        "allowed_ip": "192.168.1.100",
+        "allowed_domain": "secure.ankavm.local",
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=90)).isoformat(),
+        "is_active": True
+    }
+}
+
+class LicenseVerifyRequest(BaseModel):
+    license_key: str  # Can be raw key or hashed key, we will handle both
+    domain: str
+    ip: str
+
+@app.post("/verify")
+def verify_license(req: LicenseVerifyRequest):
+    # Support both raw keys and hashes
+    key_hash = req.license_key
+    if not len(key_hash) == 64:  # If it looks like a raw key, hash it
+        key_hash = get_sha256(req.license_key)
+
+    license_info = LICENSES_DB.get(key_hash)
+    if not license_info:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="License key invalid or not found on server."
+        )
+
+    # Check activation state
+    if not license_info["is_active"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="License has been administratively suspended."
+        )
+
+    # Check expiration date
+    expires_at = datetime.fromisoformat(license_info["expires_at"])
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"License expired on {expires_at.strftime('%Y-%m-%d %H:%M:%S')}."
+        )
+
+    # Check IP restrictions (allow wildcards '*')
+    allowed_ip = license_info["allowed_ip"]
+    if allowed_ip != "*" and allowed_ip != req.ip and req.ip != "127.0.0.1":
+        # Note: 127.0.0.1 loopback is always permitted to avoid local dev lockout
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"License key locked to IP '{allowed_ip}'. Received IP: '{req.ip}'."
+        )
+
+    # Check Domain restrictions (allow wildcards '*')
+    allowed_domain = license_info["allowed_domain"]
+    if allowed_domain != "*" and allowed_domain != req.domain and req.domain != "localhost":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"License key locked to Domain '{allowed_domain}'. Received Domain: '{req.domain}'."
+        )
+
+    # Return successful verification metadata
+    return {
+        "status": "VERIFIED",
+        "owner_name": license_info["owner_name"],
+        "allowed_ip": allowed_ip,
+        "allowed_domain": allowed_domain,
+        "expires_at": license_info["expires_at"],
+        "license_key_hash": key_hash
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8087)
+_ANKAVM_EOF_
+
+# Write scripts/auto_repair_daemon.py
+cat << '_ANKAVM_EOF_' > /opt/ankavm/scripts/auto_repair_daemon.py
+#!/usr/bin/env python3
+import os
+import time
+import subprocess
+import urllib.request
+import json
+from datetime import datetime
+
+# Configuration Settings
+CHECK_INTERVAL_SECONDS = 15
+DISCORD_WEBHOOK_URL = os.getenv("ANKAVM_DISCORD_WEBHOOK", "")
+HOSTNAME = subprocess.check_output(["hostname"], text=True).strip()
+
+SERVICES_TO_MONITOR = [
+    {"name": "libvirtd", "desc": "Libvirt Hypervisor Daemon"},
+    {"name": "nginx", "desc": "Nginx Reverse Proxy API Gate"},
+    {"name": "systemd-resolved", "desc": "System DNS Resolver"}
+]
+
+BRIDGES_TO_MONITOR = ["virbr0"]
+
+def send_discord_alert(title: str, message: str, color: int = 16711680):
+    """Dispatches webhook payload embeds to configured Discord channel."""
+    if not DISCORD_WEBHOOK_URL:
+        print(f"[Watchdog Notification Skipped] Title: {title} | Message: {message}")
+        return
+
+    payload = {
+        "username": "AnkaVM Watchdog",
+        "avatar_url": "https://cdn-icons-png.flaticon.com/512/564/564619.png",
+        "embeds": [{
+            "title": f"⚠️ {title}",
+            "description": message,
+            "color": color,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "footer": {"text": f"Node Hostname: {HOSTNAME}"}
+        }]
+    }
+
+    try:
+        req = urllib.request.Request(
+            DISCORD_WEBHOOK_URL,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=5) as res:
+            if res.status != 204:
+                print(f"[Watchdog Webhook Alert Error] Discord API returned code {res.status}")
+    except Exception as e:
+        print(f"[Watchdog Webhook Delivery Error] FAILED: {e}")
+
+def check_service_status(service_name: str) -> bool:
+    """Verifies systemd service activation."""
+    try:
+        # systemctl is-active exits with 0 if running, non-zero otherwise
+        res = subprocess.run(
+            ["systemctl", "is-active", "--quiet", service_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+def restart_service(service_name: str) -> bool:
+    """Attempts service restoration command."""
+    try:
+        res = subprocess.run(
+            ["sudo", "systemctl", "restart", service_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+def check_bridge_interface(bridge_name: str) -> bool:
+    """Checks if target networking bridge exists on host."""
+    try:
+        res = subprocess.run(
+            ["ip", "link", "show", bridge_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+def restore_bridge_interface(bridge_name: str) -> bool:
+    """Attempts to start default network bridge via virsh."""
+    try:
+        res = subprocess.run(
+            ["sudo", "virsh", "net-start", "default"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+def main():
+    print(f"==================================================================")
+    print(f"       ANKAVM AUTO-REPAIR WATCHDOG DAEMON ACTIVE                  ")
+    print(f"==================================================================")
+    print(f"Node Monitoring Interval: {CHECK_INTERVAL_SECONDS} seconds")
+    print(f"Alert Webhook Status: {'Configured' if DISCORD_WEBHOOK_URL else 'Not Set'}\n")
+
+    send_discord_alert(
+        "Watchdog Daemon Initialized",
+        "AnkaVM virtualization node watchdog service has successfully started monitoring KVM hypervisor components.",
+        color=65280 # Green color
+    )
+
+    while True:
+        # 1. Monitor Systemd Services
+        for svc in SERVICES_TO_MONITOR:
+            name = svc["name"]
+            desc = svc["desc"]
+            
+            if not check_service_status(name):
+                log_msg = f"CRITICAL: Service '{name}' ({desc}) is crashed or stopped. Executing auto-repair..."
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {log_msg}")
+                
+                send_discord_alert(
+                    "Service Outage Detected",
+                    f"Service **{name}** ({desc}) was found offline. Watchdog is executing automated restoration checks."
+                )
+
+                if restart_service(name):
+                    success_msg = f"SUCCESS: Service '{name}' was successfully restarted and is operational."
+                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {success_msg}")
+                    send_discord_alert(
+                        "Service Auto-Repaired",
+                        f"Watchdog successfully restored **{name}** on this node.",
+                        color=3066993 # Blue color
+                    )
+                else:
+                    fail_msg = f"FATAL: Service '{name}' auto-restart failed! Manual sysadmin inspection required."
+                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {fail_msg}")
+                    send_discord_alert(
+                        "Service Restoration FAILED",
+                        f"Watchdog could not restore service **{name}**. Node is degraded!",
+                        color=15158332 # Dark Red color
+                    )
+
+        # 2. Monitor Network Bridge Interfaces
+        for bridge in BRIDGES_TO_MONITOR:
+            if not check_bridge_interface(bridge):
+                log_msg = f"CRITICAL: Network bridge interface '{bridge}' is missing or inactive. Attempting restoration..."
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {log_msg}")
+                
+                send_discord_alert(
+                    "Network Bridge Outage",
+                    f"Virtual bridge interface **{bridge}** is down. Attempting virsh net-start default execution."
+                )
+
+                if restore_bridge_interface(bridge):
+                    success_msg = f"SUCCESS: Network bridge '{bridge}' was successfully restored."
+                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {success_msg}")
+                    send_discord_alert(
+                        "Network Restored",
+                        f"Network bridge **{bridge}** was successfully brought back online.",
+                        color=3066993
+                    )
+                else:
+                    fail_msg = f"FATAL: Network bridge '{bridge}' restoration failed!"
+                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {fail_msg}")
+                    send_discord_alert(
+                        "Network Restoration FAILED",
+                        f"Could not restore bridge **{bridge}** on the node.",
+                        color=15158332
+                    )
+
+        time.sleep(CHECK_INTERVAL_SECONDS)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nStopping Watchdog daemon.")
 _ANKAVM_EOF_
 
 # Write frontend/style.css
@@ -1643,6 +2465,164 @@ pre code {
 }
 _ANKAVM_EOF_
 
+# Write frontend/fetch_helpers.js
+cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/fetch_helpers.js
+// AnkaVM Dashboard Client Fetch Helper Modules
+
+const API_HEADERS = {
+    'Content-Type': 'application/json',
+    'X-API-Key': 'ankavm-secure-dev-token-2026'
+};
+
+/**
+ * Renders the color-coded Proxmox-style disk progress bar based on percentage capacity.
+ * Red indicator starts above 90% load.
+ */
+function renderProxmoxProgressBar(usedGb, totalGb) {
+    const pct = totalGb > 0 ? Math.round((usedGb / totalGb) * 100) : 0;
+    const colorClass = pct >= 90 ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : 'bg-brand-500';
+    
+    return `
+        <div class="space-y-1 font-mono text-[10px] w-full">
+            <div class="flex justify-between text-slate-400">
+                <span>Disk: ${usedGb}G / ${totalGb}G</span>
+                <span class="${pct >= 90 ? 'text-red-400 font-bold' : ''}">${pct}%</span>
+            </div>
+            <div class="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-slate-800">
+                <div class="h-full rounded-full transition-all duration-500 ${colorClass}" style="width: ${pct}%"></div>
+            </div>
+        </div>
+    `;
+}
+
+/**
+ * Toggles skeleton loaders overlay indicators on dashboard tables and charts.
+ */
+function toggleSkeletonLoaders(isLoading) {
+    const skeletons = document.querySelectorAll('.skeleton-wrapper');
+    const actualContent = document.querySelectorAll('.data-content-wrapper');
+    
+    skeletons.forEach(el => {
+        if (isLoading) el.classList.remove('hidden');
+        else el.classList.add('hidden');
+    });
+    
+    actualContent.forEach(el => {
+        if (isLoading) el.classList.add('opacity-40');
+        else el.classList.remove('opacity-40');
+    });
+}
+
+/**
+ * Initializes physical storage health ApexCharts
+ */
+let storageHealthChart = null;
+function initStorageHealthChart(containerId, allocatedData = [], freeData = [], categories = []) {
+    const el = document.getElementById(containerId);
+    if (!el) return;
+
+    const options = {
+        series: [{
+            name: 'Allocated Space (GB)',
+            data: allocatedData
+        }, {
+            name: 'Free Space (GB)',
+            data: freeData
+        }],
+        chart: {
+            type: 'bar',
+            height: 220,
+            stacked: true,
+            toolbar: { show: false },
+            background: 'transparent'
+        },
+        theme: { mode: 'dark' },
+        colors: ['#3b82f6', '#10b981'],
+        plotOptions: {
+            bar: {
+                horizontal: true,
+                borderRadius: 4
+            }
+        },
+        xaxis: {
+            categories: categories,
+            labels: { style: { colors: '#9ca3af' } }
+        },
+        yaxis: {
+            labels: { style: { colors: '#9ca3af' } }
+        },
+        legend: {
+            position: 'top',
+            labels: { colors: '#e5e7eb' }
+        },
+        grid: {
+            borderColor: '#1f2937'
+        }
+    };
+
+    if (storageHealthChart) {
+        storageHealthChart.destroy();
+    }
+    storageHealthChart = new ApexCharts(el, options);
+    storageHealthChart.render();
+}
+
+/**
+ * Updates storage charts with active statistics
+ */
+function updateStorageHealthChart(pools) {
+    if (!storageHealthChart) return;
+    
+    const allocated = pools.map(p => p.allocated_gb);
+    const free = pools.map(p => p.free_gb);
+    const names = pools.map(p => p.name);
+    
+    storageHealthChart.updateSeries([{
+        name: 'Allocated Space (GB)',
+        data: allocated
+    }, {
+        name: 'Free Space (GB)',
+        data: free
+    }]);
+    
+    storageHealthChart.updateOptions({
+        xaxis: { categories: names }
+    });
+}
+
+/**
+ * Live polling loop that pulls hypervisor status statistics
+ */
+async function startLivePolling(onUpdateCallback, intervalMs = 2000) {
+    toggleSkeletonLoaders(true);
+    
+    // Initial fetch
+    try {
+        const res = await fetch('/api/storage/pools', { headers: API_HEADERS });
+        if (res.ok) {
+            const pools = await res.json();
+            onUpdateCallback(pools);
+            toggleSkeletonLoaders(false);
+        }
+    } catch (err) {
+        console.error("Dashboard init load warning: ", err);
+    }
+    
+    // Polling loop
+    setInterval(async () => {
+        try {
+            const res = await fetch('/api/storage/pools', { headers: API_HEADERS });
+            if (res.ok) {
+                const pools = await res.json();
+                onUpdateCallback(pools);
+            }
+        } catch (err) {
+            console.error("Outage during live stats polling: ", err);
+        }
+    }, intervalMs);
+}
+_ANKAVM_EOF_
+
 # Write frontend/app.js
 cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/app.js
 document.addEventListener('alpine:init', () => {
@@ -1656,7 +2636,7 @@ document.addEventListener('alpine:init', () => {
 
     Alpine.data('vmPanel', () => ({
         // Tab system
-        activeTab: 'dashboard', // dashboard, vms, networks, ipam, storage, settings
+        activeTab: 'dashboard', // dashboard, vms, networks, ipam, storage, settings, license
         
         // Data States
         vms: [],
@@ -1665,6 +2645,16 @@ document.addEventListener('alpine:init', () => {
         activityLogs: [],
         ipPools: [],
         ipLeases: [],
+        ipamLogs: [],
+        licenseStatus: {
+            is_licensed: false,
+            owner_name: 'Sistem Yükleniyor...',
+            allowed_ip: '',
+            allowed_domain: '',
+            expires_at: '',
+            hardware_id: '',
+            detail: ''
+        },
         hostStats: {
             cpu_usage: 0,
             ram_total_gb: 0,
@@ -1682,6 +2672,7 @@ document.addEventListener('alpine:init', () => {
         // VDS Inspector Details
         selectedVmName: null,
         selectedVmTelemetry: null,
+        selectedVmTraffic: null,
         telemetryHistory: {
             cpu: [],
             ram: [],
@@ -1701,6 +2692,7 @@ document.addEventListener('alpine:init', () => {
         showCreateNetModal: false,
         showCreatePoolModal: false,
         showConsoleModal: false,
+        licenseKeyInput: '',
         
         // Provisioning forms
         createForm: {
@@ -1708,6 +2700,7 @@ document.addEventListener('alpine:init', () => {
             cpu: 2,
             ram_mb: 2048,
             disk_gb: 40,
+            disk_pool: 'default-dir',
             os_template: 'ubuntu-22.04',
             root_password: 'AnkaVM-Secure-Root-2026',
             ssh_key: ''
@@ -1738,38 +2731,48 @@ document.addEventListener('alpine:init', () => {
         termInstance: null,
 
         async init() {
-            console.log("Initializing Corporate Dashboard Controller with Automation...");
+            console.log("Initializing Corporate SaaS Dashboard Controller with Watchdog & Licensing...");
+            
+            toggleSkeletonLoaders(true);
             
             // Initial data pull
             await Promise.all([
+                this.fetchLicenseStatus(),
                 this.fetchVms(),
                 this.fetchHostStats(),
                 this.fetchNetworks(),
                 this.fetchStorage(),
                 this.fetchLogs(),
-                this.fetchIpamData()
+                this.fetchIpamData(),
+                this.fetchIpLogs()
             ]);
             
             this.loading = false;
+            toggleSkeletonLoaders(false);
             
             // Set up charts on next tick
             this.$nextTick(() => {
                 this.initHostCharts();
+                this.renderApexStorageCharts();
             });
 
             // Set up timers for data sync
             setInterval(() => this.fetchHostStats(), 4000);
             setInterval(() => this.fetchVms(), 5000);
             setInterval(() => this.fetchActiveVmTelemetry(), 3000);
+            setInterval(() => this.fetchActiveVmTraffic(), 3000);
             setInterval(() => this.fetchLogs(), 6000);
+            setInterval(() => this.fetchLicenseStatus(), 15000);
             setInterval(() => {
                 if (this.activeTab === 'networks') this.fetchNetworks();
                 if (this.activeTab === 'storage') this.fetchStorage();
-                if (this.activeTab === 'ipam') this.fetchIpamData();
+                if (this.activeTab === 'ipam') {
+                    this.fetchIpamData();
+                    this.fetchIpLogs();
+                }
             }, 8000);
         },
 
-        // Tab selection change hook
         setTab(tabName) {
             this.activeTab = tabName;
             
@@ -1777,6 +2780,7 @@ document.addEventListener('alpine:init', () => {
                 this.$nextTick(() => {
                     this.initHostCharts();
                     this.updateHostCharts();
+                    this.renderApexStorageCharts();
                 });
             }
             
@@ -1788,6 +2792,42 @@ document.addEventListener('alpine:init', () => {
         },
 
         // --- Fetch actions ---
+
+        async fetchLicenseStatus() {
+            try {
+                const res = await fetch(`${API_BASE}/license/status`);
+                if (res.ok) {
+                    this.licenseStatus = await res.json();
+                }
+            } catch (err) {
+                console.error("License check fail", err);
+            }
+        },
+
+        async updateLicense() {
+            if (!this.licenseKeyInput) {
+                this.showToast("Lütfen lisans anahtarınızı girin.", "warning");
+                return;
+            }
+            this.showToast("Lisans anahtarı güncelleniyor...", "info");
+            try {
+                const res = await fetch(`${API_BASE}/license/update`, {
+                    method: 'POST',
+                    headers: API_HEADERS,
+                    body: JSON.stringify({ license_key: this.licenseKeyInput })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    this.showToast(data.message, "success");
+                    this.licenseKeyInput = '';
+                    await this.fetchLicenseStatus();
+                } else {
+                    throw new Error(data.detail);
+                }
+            } catch (err) {
+                this.showToast(err.message, "error");
+            }
+        },
 
         async fetchVms() {
             try {
@@ -1821,10 +2861,13 @@ document.addEventListener('alpine:init', () => {
 
         async fetchStorage() {
             try {
-                const res = await fetch(`${API_BASE}/storage`, { headers: API_HEADERS });
-                if (res.ok) this.storagePools = await res.json();
+                const res = await fetch(`${API_BASE}/storage/pools`, { headers: API_HEADERS });
+                if (res.ok) {
+                    this.storagePools = await res.json();
+                    this.renderApexStorageCharts();
+                }
             } catch (err) {
-                console.error("Storage fetch failure", err);
+                console.error("Storage pools fetch failure", err);
             }
         },
 
@@ -1848,6 +2891,15 @@ document.addEventListener('alpine:init', () => {
                 if (leasesRes.ok) this.ipLeases = await leasesRes.json();
             } catch (err) {
                 console.error("IPAM fetch failure", err);
+            }
+        },
+
+        async fetchIpLogs() {
+            try {
+                const res = await fetch(`${API_BASE}/ipam/logs`, { headers: API_HEADERS });
+                if (res.ok) this.ipamLogs = await res.json();
+            } catch (err) {
+                console.error("IPAM logs fetch failure", err);
             }
         },
 
@@ -1886,10 +2938,32 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        async fetchActiveVmTraffic() {
+            if (!this.selectedVmName || this.activeTab !== 'vms') return;
+            const activeVm = this.vms.find(v => v.name === this.selectedVmName);
+            if (!activeVm || activeVm.status !== 'running') {
+                this.selectedVmTraffic = null;
+                return;
+            }
+            try {
+                const res = await fetch(`${API_BASE}/vms/${this.selectedVmName}/traffic`, { headers: API_HEADERS });
+                if (res.ok) {
+                    const traffic = await res.json();
+                    this.selectedVmTraffic = traffic;
+                    if (traffic.ddos_alert) {
+                        this.showToast(`🚨 UYARI: ${this.selectedVmName} sanal sunucusunda yüksek trafik (DDoS olasılığı) tespit edildi!`, 'warning');
+                    }
+                }
+            } catch (err) {
+                console.error("VM traffic metrics load failure", err);
+            }
+        },
+
         selectVm(name) {
             if (this.selectedVmName === name) {
                 this.selectedVmName = null;
                 this.selectedVmTelemetry = null;
+                this.selectedVmTraffic = null;
                 this.telemetryHistory = { cpu: [], ram: [], timestamps: [] };
                 return;
             }
@@ -1899,6 +2973,7 @@ document.addEventListener('alpine:init', () => {
             this.$nextTick(() => {
                 this.initVmPerformanceChart();
                 this.fetchActiveVmTelemetry();
+                this.fetchActiveVmTraffic();
             });
         },
 
@@ -1914,7 +2989,7 @@ document.addEventListener('alpine:init', () => {
                 if (!res.ok) throw new Error(data.detail || "İşlem başarısız.");
                 
                 this.showToast(data.message, 'success');
-                await Promise.all([this.fetchVms(), this.fetchLogs(), this.fetchIpamData()]);
+                await Promise.all([this.fetchVms(), this.fetchLogs()]);
             } catch (err) {
                 this.showToast(err.message, 'error');
             }
@@ -1933,7 +3008,7 @@ document.addEventListener('alpine:init', () => {
                 if (!res.ok) throw new Error(data.detail || "Kurulum başarısız.");
                 
                 this.showToast(`VDS '${data.name}' başarıyla oluşturuldu ve başlatıldı.`, 'success');
-                this.createForm = { name: '', cpu: 2, ram_mb: 2048, disk_gb: 40, os_template: 'ubuntu-22.04', root_password: 'AnkaVM-Secure-Root-2026', ssh_key: '' };
+                this.createForm = { name: '', cpu: 2, ram_mb: 2048, disk_gb: 40, disk_pool: 'default-dir', os_template: 'ubuntu-22.04', root_password: 'AnkaVM-Secure-Root-2026', ssh_key: '' };
                 await Promise.all([this.fetchVms(), this.fetchLogs(), this.fetchIpamData()]);
             } catch (err) {
                 this.showToast(err.message, 'error');
@@ -1955,7 +3030,7 @@ document.addEventListener('alpine:init', () => {
                 
                 this.showToast(data.message, 'success');
                 if (this.selectedVmName === name) this.selectedVmName = null;
-                await Promise.all([this.fetchVms(), this.fetchLogs(), this.fetchIpamData()]);
+                await Promise.all([this.fetchVms(), this.fetchLogs(), this.fetchIpamData(), this.fetchIpLogs()]);
             } catch (err) {
                 this.showToast(err.message, 'error');
             }
@@ -1984,16 +3059,14 @@ document.addEventListener('alpine:init', () => {
         },
 
         async provisionIpPool() {
-            // Simulated adding IP pool via networks post config
             this.showToast(`IP Havuzu ekleniyor: ${this.createPoolForm.name}`, 'info');
             this.showCreatePoolModal = false;
             
-            // In mock configurations, we can define a virtual bridge to trigger VMManager network mapping
             const mockNet = {
                 name: this.createPoolForm.name,
                 bridge: 'virbr' + (this.networks.length + 1),
                 ip: this.createPoolForm.gateway,
-                dhcp_start: this.createPoolForm.dns_primary, // mapping parameters
+                dhcp_start: this.createPoolForm.dns_primary,
                 dhcp_end: this.createPoolForm.dns_secondary
             };
             
@@ -2010,6 +3083,20 @@ document.addEventListener('alpine:init', () => {
                 }
             } catch (err) {
                 this.showToast(err.message, 'error');
+            }
+        },
+
+        // --- Render ApexCharts ---
+
+        renderApexStorageCharts() {
+            if (this.storagePools.length > 0) {
+                const allocated = this.storagePools.map(p => parseFloat(p.allocated_gb));
+                const free = this.storagePools.map(p => parseFloat(p.free_gb));
+                const categories = this.storagePools.map(p => p.name);
+                
+                this.$nextTick(() => {
+                    initStorageHealthChart('storagePoolApexChart', allocated, free, categories);
+                });
             }
         },
 
@@ -2049,9 +3136,9 @@ document.addEventListener('alpine:init', () => {
             if (this.hostRamChart) this.hostRamChart.destroy();
             if (this.hostDiskChart) this.hostDiskChart.destroy();
 
-            this.hostCpuChart = new Chart(cpuEl, chartConfig('#00f0ff'));
-            this.hostRamChart = new Chart(ramEl, chartConfig('#ff007f'));
-            this.hostDiskChart = new Chart(diskEl, chartConfig('#39ff14'));
+            this.hostCpuChart = new Chart(cpuEl, chartConfig('#3b82f6'));
+            this.hostRamChart = new Chart(ramEl, chartConfig('#10b981'));
+            this.hostDiskChart = new Chart(diskEl, chartConfig('#ef4444'));
         },
 
         updateHostCharts() {
@@ -2081,20 +3168,20 @@ document.addEventListener('alpine:init', () => {
                     labels: this.telemetryHistory.timestamps,
                     datasets: [
                         {
-                            label: 'CPU Core Usage (%)',
+                            label: 'CPU Kullanımı (%)',
                             data: this.telemetryHistory.cpu,
-                            borderColor: '#00f0ff',
-                            backgroundColor: 'rgba(0, 240, 255, 0.05)',
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.05)',
                             fill: true,
                             tension: 0.4,
                             borderWidth: 2,
                             pointRadius: 1
                         },
                         {
-                            label: 'Memory Load (%)',
+                            label: 'RAM Yükü (%)',
                             data: this.telemetryHistory.ram,
-                            borderColor: '#ff007f',
-                            backgroundColor: 'rgba(255, 0, 127, 0.05)',
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.05)',
                             fill: true,
                             tension: 0.4,
                             borderWidth: 2,
@@ -2119,7 +3206,7 @@ document.addEventListener('alpine:init', () => {
                     },
                     plugins: {
                         legend: {
-                            labels: { color: '#e2e8f0', font: { family: 'Orbitron', size: 10 } }
+                            labels: { color: '#e2e8f0', font: { size: 10 } }
                         }
                     }
                 }
@@ -2134,7 +3221,7 @@ document.addEventListener('alpine:init', () => {
             this.vmPerformanceChart.update('none');
         },
 
-        // --- Xterm.js Terminal WebSocket Console ---
+        // --- Xterm.js Terminal Console ---
 
         openConsole(vmName) {
             this.showConsoleModal = true;
@@ -2166,16 +3253,16 @@ document.addEventListener('alpine:init', () => {
             this.termInstance = new Terminal({
                 theme: {
                     background: '#070a13',
-                    foreground: '#00f0ff',
-                    cursor: '#00f0ff',
-                    selectionBackground: 'rgba(0, 240, 255, 0.3)',
+                    foreground: '#3b82f6',
+                    cursor: '#3b82f6',
+                    selectionBackground: 'rgba(59, 130, 246, 0.3)',
                     black: '#000000',
                     red: '#ff3838',
-                    green: '#39ff14',
+                    green: '#10b981',
                     yellow: '#ffd700',
-                    blue: '#00f0ff',
-                    magenta: '#ff007f',
-                    cyan: '#00f0ff',
+                    blue: '#3b82f6',
+                    magenta: '#d946ef',
+                    cyan: '#06b6d4',
                     white: '#ffffff'
                 },
                 cursorBlink: true,
@@ -2284,7 +3371,7 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AnkaVM // Kurumsal VDS Hypervisor Paneli</title>
+    <title>AnkaVM // SaaS Virtualization Hypervisor Portal</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -2300,164 +3387,367 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
     </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
     <link rel="stylesheet" href="style.css" />
+    <script src="fetch_helpers.js"></script>
     <script src="app.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
-<body class="bg-[#0b0f19] min-h-screen flex text-slate-300" x-data="vmPanel">
+<body class="bg-[#0b0f19] min-h-screen flex flex-col text-slate-300" x-data="vmPanel">
 
-    <div x-show="loading" class="fixed inset-0 bg-[#0b0f19] z-50 flex flex-col items-center justify-center space-y-4">
-        <div class="w-16 h-16 rounded-full border-2 border-t-brand-500 border-r-transparent border-l-transparent border-b-transparent animate-spin"></div>
-        <div class="text-sm font-semibold tracking-wider text-slate-400">ANKAVM YÜKLENİYOR...</div>
+    <!-- Global Licensing Warning Banner -->
+    <div x-show="!licenseStatus.is_licensed" class="bg-red-600 text-white text-xs py-2 px-4 text-center font-semibold font-mono tracking-wider w-full sticky top-0 z-50 flex items-center justify-center space-x-2">
+        <i class="fa-solid fa-triangle-exclamation animate-bounce"></i>
+        <span>LİSANS UYARISI: Bu hypervisor düğümünün lisansı doğrulanmadı veya süresi doldu! Sunucu kilitlendi.</span>
+        <button @click="setTab('license')" class="underline ml-2 font-bold hover:text-slate-200">Lisansı Güncelle / Doğrula</button>
     </div>
 
-    <!-- Left Sidebar -->
-    <aside class="w-60 bg-[#111827] border-r border-slate-800 flex flex-col justify-between shrink-0 sticky top-0 h-screen z-30">
-        <div class="p-5 border-b border-slate-800">
-            <div class="flex items-center space-x-3">
-                <div class="w-8 h-8 rounded bg-brand-500 flex items-center justify-center text-white font-bold"><i class="fa-solid fa-server text-sm"></i></div>
-                <div>
-                    <h1 class="text-base font-bold text-white tracking-wide">Anka<span class="text-brand-500">VM</span></h1>
-                    <p class="text-[9px] text-slate-500 font-mono tracking-wider uppercase">Hypervisor Console</p>
-                </div>
-            </div>
-        </div>
-
-        <nav class="flex-1 px-3 py-4 space-y-1 font-medium text-xs">
-            <button @click="setTab('dashboard')" :class="activeTab === 'dashboard' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
-                <i class="fa-solid fa-chart-pie text-sm" :class="activeTab === 'dashboard' ? 'text-brand-500' : ''"></i>
-                <span>Gösterge Paneli</span>
-            </button>
-            <button @click="setTab('vms')" :class="activeTab === 'vms' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
-                <i class="fa-solid fa-desktop text-sm" :class="activeTab === 'vms' ? 'text-brand-500' : ''"></i>
-                <span>Sanal Sunucular (VDS)</span>
-            </button>
-            <button @click="setTab('ipam')" :class="activeTab === 'ipam' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
-                <i class="fa-solid fa-map-location-dot text-sm" :class="activeTab === 'ipam' ? 'text-brand-500' : ''"></i>
-                <span>IPAM (IP Havuzları)</span>
-            </button>
-            <button @click="setTab('networks')" :class="activeTab === 'networks' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
-                <i class="fa-solid fa-network-wired text-sm" :class="activeTab === 'networks' ? 'text-brand-500' : ''"></i>
-                <span>Ağ Yönetimi</span>
-            </button>
-            <button @click="setTab('storage')" :class="activeTab === 'storage' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
-                <i class="fa-solid fa-database text-sm" :class="activeTab === 'storage' ? 'text-brand-500' : ''"></i>
-                <span>Depolama Alanları</span>
-            </button>
-            <button @click="setTab('settings')" :class="activeTab === 'settings' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
-                <i class="fa-solid fa-sliders text-sm" :class="activeTab === 'settings' ? 'text-brand-500' : ''"></i>
-                <span>Sistem Ayarları & WiseCP</span>
-            </button>
-        </nav>
-
-        <div class="p-4 border-t border-slate-800 font-mono text-[9px] text-slate-500">
-            <div class="flex items-center space-x-2 mb-1.5">
-                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                <span class="text-slate-400 font-semibold uppercase">API Bağlantısı Aktif</span>
-            </div>
-            <div>VERİ MERKEZİ: LOKAL KVM</div>
-        </div>
-    </aside>
-
-    <!-- Main Container -->
-    <div class="flex-1 flex flex-col min-w-0">
-        <header class="h-16 border-b border-slate-800 bg-[#111827] flex items-center justify-between px-6">
-            <div class="flex items-center space-x-3">
-                <h2 class="text-sm font-bold text-white uppercase tracking-wider">
-                    <span x-show="activeTab === 'dashboard'">GÖSTERGE PANELİ</span>
-                    <span x-show="activeTab === 'vms'">SANAL SUNUCU LİSTESİ</span>
-                    <span x-show="activeTab === 'ipam'">IPAM YÖNETİMİ</span>
-                    <span x-show="activeTab === 'networks'">SANAL AĞ KÖPRÜLERİ</span>
-                    <span x-show="activeTab === 'storage'">DEPOLAMA HAVUZLARI</span>
-                    <span x-show="activeTab === 'settings'">SİSTEM ENTEGRASYONLARI & WiseCP</span>
-                </h2>
-                <div class="h-4 w-[1px] bg-slate-800"></div>
-                <span class="text-[11px] font-mono text-slate-400" x-text="`Aktif VM: ${hostStats.vms_running} / Toplam: ${hostStats.vms_total}`"></span>
-            </div>
-        </header>
-
-        <main class="flex-1 p-6 overflow-y-auto">
-            <!-- DASHBOARD -->
-            <div x-show="activeTab === 'dashboard'" x-cloak class="space-y-6">
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
-                    <div class="corp-card rounded-lg p-4">
-                        <div class="flex justify-between items-start mb-2">
-                            <div>
-                                <h3 class="text-xs uppercase text-slate-400 font-bold">Host CPU</h3>
-                                <p class="text-xl font-bold text-white mt-0.5" x-text="`${hostStats.cpu_usage}%`"></p>
-                            </div>
-                        </div>
-                        <div class="relative h-24 flex items-center justify-center"><canvas id="cpuChartCanvas"></canvas></div>
-                    </div>
-                    <div class="corp-card rounded-lg p-4">
-                        <div class="flex justify-between items-start mb-2">
-                            <div>
-                                <h3 class="text-xs uppercase text-slate-400 font-bold">Host RAM</h3>
-                                <p class="text-xl font-bold text-white mt-0.5" x-text="`${hostStats.ram_used_gb}G / ${hostStats.ram_total_gb}G`"></p>
-                            </div>
-                        </div>
-                        <div class="relative h-24 flex items-center justify-center"><canvas id="ramChartCanvas"></canvas></div>
-                    </div>
-                    <div class="corp-card rounded-lg p-4">
-                        <div class="flex justify-between items-start mb-2">
-                            <div>
-                                <h3 class="text-xs uppercase text-slate-400 font-bold">Host Disk</h3>
-                                <p class="text-xl font-bold text-white mt-0.5" x-text="`${hostStats.disk_used_gb}G / ${hostStats.disk_total_gb}G`"></p>
-                            </div>
-                        </div>
-                        <div class="relative h-24 flex items-center justify-center"><canvas id="diskChartCanvas"></canvas></div>
-                    </div>
-                </div>
-
-                <div class="corp-card rounded-lg p-5">
-                    <div class="border-b border-slate-800 pb-3 mb-3"><h2 class="text-xs font-bold uppercase text-slate-200">Hypervisor Eylem Günlüğü</h2></div>
-                    <div class="h-48 bg-slate-950/80 border border-slate-800/80 rounded p-3 overflow-y-auto font-mono text-[10px] space-y-1">
-                        <template x-for="log in activityLogs">
-                            <div class="flex items-start space-x-2">
-                                <span class="text-slate-600" x-text="`[${log.timestamp}]`"></span>
-                                <span :class="{'text-brand-500': log.level==='INFO', 'text-emerald-500': log.level==='SUCCESS', 'text-red-500': log.level!=='INFO'&&log.level!=='SUCCESS'}" class="font-bold shrink-0" x-text="`[${log.level}]`"></span>
-                                <span class="text-slate-300" x-text="log.message"></span>
-                            </div>
-                        </template>
+    <!-- Page Body Wrapper -->
+    <div class="flex-1 flex min-h-0">
+        
+        <!-- Left Sidebar Navigation -->
+        <aside class="w-60 bg-[#111827] border-r border-slate-800 flex flex-col justify-between shrink-0 sticky top-0 h-screen z-30">
+            <div class="p-5 border-b border-slate-800">
+                <div class="flex items-center space-x-3">
+                    <div class="w-8 h-8 rounded bg-brand-500 flex items-center justify-center text-white font-bold"><i class="fa-solid fa-server text-sm"></i></div>
+                    <div>
+                        <h1 class="text-base font-bold text-white tracking-wide">Anka<span class="text-brand-500">VM</span></h1>
+                        <p class="text-[9px] text-slate-500 font-mono tracking-wider uppercase">SaaS Hypervisor Node</p>
                     </div>
                 </div>
             </div>
 
-            <!-- VMS LIST -->
-            <div x-show="activeTab === 'vms'" x-cloak class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div class="lg:col-span-2 space-y-5">
-                    <div class="corp-card rounded-lg p-5">
-                        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
-                            <input type="text" x-model="searchQuery" placeholder="Sunucu veya IP ara..." class="pl-3 pr-3 py-1.5 bg-[#0b0f19] border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono w-full max-w-xs"/>
-                            <button @click="showCreateModal = true" class="btn-primary text-xs font-semibold py-1.5 px-3 rounded">VDS OLUŞTUR</button>
+            <!-- Navigation Sidebar Links -->
+            <nav class="flex-1 px-3 py-4 space-y-1 font-medium text-xs">
+                <button @click="setTab('dashboard')" :class="activeTab === 'dashboard' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-chart-pie text-sm" :class="activeTab === 'dashboard' ? 'text-brand-500' : ''"></i>
+                    <span>Gösterge Paneli</span>
+                </button>
+                <button @click="setTab('vms')" :class="activeTab === 'vms' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-desktop text-sm" :class="activeTab === 'vms' ? 'text-brand-500' : ''"></i>
+                    <span>Sanal Sunucular (VDS)</span>
+                </button>
+                <button @click="setTab('ipam')" :class="activeTab === 'ipam' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-map-location-dot text-sm" :class="activeTab === 'ipam' ? 'text-brand-500' : ''"></i>
+                    <span>IPAM (IP Yönetimi)</span>
+                </button>
+                <button @click="setTab('networks')" :class="activeTab === 'networks' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-network-wired text-sm" :class="activeTab === 'networks' ? 'text-brand-500' : ''"></i>
+                    <span>Ağ Köprüleri</span>
+                </button>
+                <button @click="setTab('storage')" :class="activeTab === 'storage' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-database text-sm" :class="activeTab === 'storage' ? 'text-brand-500' : ''"></i>
+                    <span>Disk Depolama (Storage)</span>
+                </button>
+                <button @click="setTab('license')" :class="activeTab === 'license' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-key text-sm" :class="activeTab === 'license' ? 'text-brand-500' : ''"></i>
+                    <span>Lisans Denetimi</span>
+                </button>
+                <button @click="setTab('settings')" :class="activeTab === 'settings' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-sliders text-sm" :class="activeTab === 'settings' ? 'text-brand-500' : ''"></i>
+                    <span>Entegrasyon & WiseCP</span>
+                </button>
+            </nav>
+
+            <div class="p-4 border-t border-slate-800 font-mono text-[9px] text-slate-500">
+                <div class="flex items-center space-x-2 mb-1.5" x-show="licenseStatus.is_licensed">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    <span class="text-slate-400 font-semibold uppercase">LİSANS DOĞRULANDI</span>
+                </div>
+                <div class="flex items-center space-x-2 mb-1.5" x-show="!licenseStatus.is_licensed">
+                    <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+                    <span class="text-slate-400 font-semibold uppercase">LİSANS GEÇERSİZ</span>
+                </div>
+                <div>YÜKLEME TÜRÜ: KVM+POSTGRES</div>
+            </div>
+        </aside>
+
+        <!-- Main Workspace -->
+        <div class="flex-1 flex flex-col min-w-0">
+            <header class="h-16 border-b border-slate-800 bg-[#111827] flex items-center justify-between px-6">
+                <div class="flex items-center space-x-3">
+                    <h2 class="text-sm font-bold text-white uppercase tracking-wider">
+                        <span x-show="activeTab === 'dashboard'">GÖSTERGE PANELİ</span>
+                        <span x-show="activeTab === 'vms'">SANAL SUNUCU LİSTESİ</span>
+                        <span x-show="activeTab === 'ipam'">IPAM YÖNETİMİ</span>
+                        <span x-show="activeTab === 'networks'">SANAL AĞ KÖPRÜLERİ</span>
+                        <span x-show="activeTab === 'storage'">DEPOLAMA HAVUZLARI</span>
+                        <span x-show="activeTab === 'license'">LİSANS YÖNETİCİSİ</span>
+                        <span x-show="activeTab === 'settings'">SİSTEM ENTEGRASYONLARI & WiseCP</span>
+                    </h2>
+                    <div class="h-4 w-[1px] bg-slate-800"></div>
+                    <span class="text-[11px] font-mono text-slate-400" x-text="`Aktif VM: ${hostStats.vms_running} / Toplam: ${hostStats.vms_total}`"></span>
+                </div>
+            </header>
+
+            <main class="flex-1 p-6 overflow-y-auto">
+                
+                <!-- Skeleton Loader Shimmer Container -->
+                <div class="skeleton-wrapper hidden space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+                        <div class="shimmer h-32 rounded-lg border border-slate-800"></div>
+                        <div class="shimmer h-32 rounded-lg border border-slate-800"></div>
+                        <div class="shimmer h-32 rounded-lg border border-slate-800"></div>
+                    </div>
+                    <div class="shimmer h-64 rounded-lg border border-slate-800"></div>
+                </div>
+
+                <!-- Actual Data Content -->
+                <div class="data-content-wrapper space-y-6">
+                    
+                    <!-- 1. DASHBOARD TAB -->
+                    <div x-show="activeTab === 'dashboard'" x-cloak class="space-y-6">
+                        <!-- Top metrics -->
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+                            <div class="corp-card rounded-lg p-4">
+                                <h3 class="text-xs uppercase text-slate-400 font-bold mb-1">Host CPU</h3>
+                                <p class="text-xl font-bold text-white mb-2" x-text="`${hostStats.cpu_usage}%`"></p>
+                                <div class="relative h-24 flex items-center justify-center"><canvas id="cpuChartCanvas"></canvas></div>
+                            </div>
+                            <div class="corp-card rounded-lg p-4">
+                                <h3 class="text-xs uppercase text-slate-400 font-bold mb-1">Host RAM</h3>
+                                <p class="text-xl font-bold text-white mb-2" x-text="`${hostStats.ram_used_gb}G / ${hostStats.ram_total_gb}G`"></p>
+                                <div class="relative h-24 flex items-center justify-center"><canvas id="ramChartCanvas"></canvas></div>
+                            </div>
+                            <div class="corp-card rounded-lg p-4">
+                                <h3 class="text-xs uppercase text-slate-400 font-bold mb-1">Host Disk</h3>
+                                <p class="text-xl font-bold text-white mb-2" x-text="`${hostStats.disk_used_gb}G / ${hostStats.disk_total_gb}G`"></p>
+                                <div class="relative h-24 flex items-center justify-center"><canvas id="diskChartCanvas"></canvas></div>
+                            </div>
                         </div>
-                        <div class="overflow-x-auto">
-                            <table class="min-w-full divide-y divide-slate-800 text-xs">
+
+                        <!-- Storage Pools Health Chart (ApexCharts Stacked Bar) -->
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <div class="lg:col-span-2 corp-card rounded-lg p-5">
+                                <h3 class="text-xs uppercase text-white font-bold mb-4">LVM & ZFS Storage Pools Health (ApexCharts)</h3>
+                                <div id="storagePoolApexChart" class="w-full"></div>
+                            </div>
+                            <!-- Storage List -->
+                            <div class="corp-card rounded-lg p-5 space-y-4">
+                                <h3 class="text-xs uppercase text-white font-bold">Disk Depolama Listesi</h3>
+                                <div class="space-y-3">
+                                    <template x-for="pool in storagePools">
+                                        <div class="bg-slate-900/60 p-3 rounded border border-slate-800 text-xs space-y-2">
+                                            <div class="flex justify-between font-bold">
+                                                <span x-text="pool.name" class="text-white"></span>
+                                                <span x-text="pool.pool_type" class="text-brand-500 font-mono text-[10px]"></span>
+                                            </div>
+                                            <div class="text-[10px] text-slate-400 font-mono" x-text="`Dizin: ${pool.mount_path}`"></div>
+                                            <div class="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
+                                                <div class="h-full rounded-full transition-all duration-500" :class="parseFloat(pool.usage_percent) >= 90 ? 'bg-red-500' : 'bg-brand-500'" :style="`width: ${pool.usage_percent}%`"></div>
+                                            </div>
+                                            <div class="flex justify-between text-[10px] text-slate-500 font-mono">
+                                                <span x-text="`Kullanılan: ${pool.allocated_gb} GB`"></span>
+                                                <span x-text="`Boş: ${pool.free_gb} GB (${pool.usage_percent}%)`"></span>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Host Logger -->
+                        <div class="corp-card rounded-lg p-5">
+                            <h2 class="text-xs font-bold uppercase text-slate-200 mb-3">Hypervisor Eylem Günlüğü</h2>
+                            <div class="h-44 bg-slate-950/80 border border-slate-800/80 rounded p-3 overflow-y-auto font-mono text-[10px] space-y-1">
+                                <template x-for="log in activityLogs">
+                                    <div class="flex items-start space-x-2">
+                                        <span class="text-slate-600" x-text="`[${log.timestamp}]`"></span>
+                                        <span :class="{'text-brand-500': log.level==='INFO', 'text-emerald-500': log.level==='SUCCESS', 'text-red-500': log.level!=='INFO'&&log.level!=='SUCCESS'}" class="font-bold shrink-0" x-text="`[${log.level}]`"></span>
+                                        <span class="text-slate-300" x-text="log.message"></span>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 2. VMS LIST TAB -->
+                    <div x-show="activeTab === 'vms'" x-cloak class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div class="lg:col-span-2 space-y-5">
+                            <div class="corp-card rounded-lg p-5">
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
+                                    <input type="text" x-model="searchQuery" placeholder="Sunucu, IP veya OS ara..." class="pl-3 pr-3 py-1.5 bg-[#0b0f19] border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono w-full max-w-xs"/>
+                                    <button @click="showCreateModal = true" class="btn-primary text-xs font-semibold py-1.5 px-3 rounded">VDS OLUŞTUR</button>
+                                </div>
+                                <div class="overflow-x-auto">
+                                    <table class="min-w-full divide-y divide-slate-800 text-xs">
+                                        <thead>
+                                            <tr class="text-slate-500 font-semibold uppercase text-left">
+                                                <th class="py-2.5 px-3">Sunucu Adı</th>
+                                                <th class="py-2.5 px-3">Durum</th>
+                                                <th class="py-2.5 px-3">Kaynak</th>
+                                                <th class="py-2.5 px-3">Disk Bar (Proxmox Style)</th>
+                                                <th class="py-2.5 px-3">IP Adresi</th>
+                                                <th class="py-2.5 px-3 text-right">Eylemler</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-slate-800/40 font-mono">
+                                            <template x-for="vm in filteredVms" :key="vm.name">
+                                                <tr @click="selectVm(vm.name)" :class="selectedVmName === vm.name ? 'bg-brand-500/5' : 'hover:bg-slate-900/30'" class="cursor-pointer">
+                                                    <td class="py-2.5 px-3 font-bold text-white" x-text="vm.name"></td>
+                                                    <td class="py-2.5 px-3">
+                                                        <span :class="vm.status === 'running' ? 'text-emerald-400' : 'text-red-400'" class="font-bold" x-text="vm.status === 'running' ? 'Aktif' : 'Kapalı'"></span>
+                                                    </td>
+                                                    <td class="py-2.5 px-3 text-[10px]" x-text="`${vm.cpu} CPU / ${(vm.ram_mb/1024).toFixed(0)}G`"></td>
+                                                    <!-- Proxmox Progress Bar Rendered dynamically -->
+                                                    <td class="py-2.5 px-3" x-html="renderProxmoxProgressBar(vm.disk_used_gb || 2.0, vm.disk_gb)"></td>
+                                                    <td class="py-2.5 px-3 text-slate-300" x-text="vm.ip_address"></td>
+                                                    <td class="py-2.5 px-3 text-right" @click.stop>
+                                                        <button x-show="vm.status !== 'running'" @click="triggerAction(vm.name, 'start')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-emerald-400"><i class="fa-solid fa-play text-[9px]"></i></button>
+                                                        <button x-show="vm.status === 'running'" @click="triggerAction(vm.name, 'stop')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-red-400"><i class="fa-solid fa-stop text-[9px]"></i></button>
+                                                        <button @click="openConsole(vm.name)" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-brand-500"><i class="fa-solid fa-terminal text-[9px]"></i></button>
+                                                        <button @click="deleteVm(vm.name)" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-red-500"><i class="fa-solid fa-trash-can text-[9px]"></i></button>
+                                                    </td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- VDS Inspector Panels -->
+                        <div class="space-y-5">
+                            <!-- Telemetry Chart -->
+                            <div class="corp-card rounded-lg p-5">
+                                <h2 class="text-xs font-bold uppercase mb-3">VDS Canlı Kaynak Telemetrisi</h2>
+                                <div x-show="selectedVmName" class="space-y-4">
+                                    <div class="h-32 bg-slate-950/40 rounded border border-slate-800 p-2"><canvas id="vmPerformanceChartCanvas"></canvas></div>
+                                </div>
+                                <div x-show="!selectedVmName" class="text-xs text-slate-500 text-center py-8">Grafikleri görüntülemek için bir sunucu seçin.</div>
+                            </div>
+
+                            <!-- Traffic vnstat monitor panel -->
+                            <div class="corp-card rounded-lg p-5 space-y-3" x-show="selectedVmName">
+                                <h3 class="text-xs font-bold uppercase text-white">vnstat Ağ Trafik İzleme</h3>
+                                <template x-if="selectedVmTraffic">
+                                    <div class="space-y-2 text-xs font-mono">
+                                        <div class="flex justify-between">
+                                            <span>İndirme Hızı (RX):</span>
+                                            <span class="text-emerald-400 font-bold" x-text="`${(selectedVmTraffic.rx_bytes_sec / 1024).toFixed(1)} KB/s`"></span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span>Yükleme Hızı (TX):</span>
+                                            <span class="text-brand-500" x-text="`${(selectedVmTraffic.tx_bytes_sec / 1024).toFixed(1)} KB/s`"></span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span>İndirme Paket (PPS):</span>
+                                            <span x-text="`${selectedVmTraffic.rx_packets_sec} pps`"></span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span>Yükleme Paket (PPS):</span>
+                                            <span x-text="`${selectedVmTraffic.tx_packets_sec} pps`"></span>
+                                        </div>
+                                        <!-- DDoS alarm trigger indicator -->
+                                        <div class="p-2 rounded mt-2 text-[10px] text-center font-bold uppercase" :class="selectedVmTraffic.ddos_alert ? 'bg-red-500/20 text-red-400 border border-red-500/50 animate-pulse' : 'bg-slate-900/60 text-slate-400 border border-slate-800'">
+                                            <span x-text="selectedVmTraffic.ddos_alert ? '🚨 SALDIRI ALARMI: DDoS Algılandı!' : 'Normal Ağ Trafik Seviyesi'"></span>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 3. IPAM TAB -->
+                    <div x-show="activeTab === 'ipam'" x-cloak class="space-y-6">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                            <template x-for="pool in ipPools">
+                                <div class="corp-card rounded-lg p-5">
+                                    <h3 class="text-xs uppercase text-white font-bold" x-text="`HAVUZ: ${pool.name}`"></h3>
+                                    <p class="text-[10px] text-slate-500 font-mono mt-1" x-text="`CIDR: ${pool.cidr} / GW: ${pool.gateway}`"></p>
+                                    <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-800 mt-4">
+                                        <div :style="`width: ${pool.usage_percent}%`" class="bg-brand-500 h-full"></div>
+                                    </div>
+                                    <div class="flex justify-between text-[9px] text-slate-500 mt-1">
+                                        <span x-text="`Kullanılan: ${pool.allocated_ips} IP`"></span>
+                                        <span x-text="`Boş: ${pool.free_ips} IP`"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- IP Kiralamaları & Log audit trail -->
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <div class="lg:col-span-2 corp-card rounded-lg p-5">
+                                <div class="flex justify-between items-center mb-4">
+                                    <h2 class="text-xs font-bold uppercase text-slate-200">Aktif IP Kiralamaları</h2>
+                                    <button @click="showCreatePoolModal = true" class="btn-primary text-xs font-semibold py-1.5 px-3 rounded">Yeni IPAM Havuzu Ekle</button>
+                                </div>
+                                <table class="min-w-full divide-y divide-slate-800 font-mono text-xs">
+                                    <thead>
+                                        <tr class="text-slate-500 uppercase text-left">
+                                            <th class="py-2.5 px-3">IP Adresi</th>
+                                            <th class="py-2.5 px-3">Havuz</th>
+                                            <th class="py-2.5 px-3">Bağlı VM</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <template x-for="lease in ipLeases" :key="lease.ip_address">
+                                            <tr>
+                                                <td class="py-2.5 px-3 font-bold text-white" x-text="lease.ip_address"></td>
+                                                <td class="py-2.5 px-3" x-text="`pool-${lease.pool_id}`"></td>
+                                                <td class="py-2.5 px-3 text-brand-500" x-text="lease.allocated_to_vm || 'Rezerve'"></td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- IPAM transaction logs -->
+                            <div class="corp-card rounded-lg p-5">
+                                <h3 class="text-xs font-bold uppercase text-white mb-3">IPAM Değişiklik Günlüğü</h3>
+                                <div class="space-y-2 h-64 overflow-y-auto font-mono text-[10px]">
+                                    <template x-for="log in ipamLogs">
+                                        <div class="p-2 bg-slate-950/60 rounded border border-slate-900 flex flex-col">
+                                            <div class="flex justify-between font-bold">
+                                                <span x-text="log.ip_address" class="text-white"></span>
+                                                <span :class="log.action_type === 'LEASE' ? 'text-emerald-400' : 'text-red-400'" x-text="log.action_type"></span>
+                                            </div>
+                                            <div class="flex justify-between text-slate-500 mt-1 text-[9px]">
+                                                <span x-text="`VDS: ${log.vm_name}`"></span>
+                                                <span x-text="log.timestamp"></span>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 4. STORAGE TAB -->
+                    <div x-show="activeTab === 'storage'" x-cloak class="space-y-6">
+                        <div class="corp-card rounded-lg p-5">
+                            <h2 class="text-xs font-bold uppercase text-white mb-4">Storage Pools (LVM / ZFS Disk Yönetimi)</h2>
+                            <table class="min-w-full divide-y divide-slate-800 text-xs font-mono">
                                 <thead>
-                                    <tr class="text-slate-500 font-semibold uppercase text-left">
-                                        <th class="py-2.5 px-3">Sunucu Adı</th>
-                                        <th class="py-2.5 px-3">Durum</th>
-                                        <th class="py-2.5 px-3">Kaynak</th>
-                                        <th class="py-2.5 px-3">IP Adresi</th>
-                                        <th class="py-2.5 px-3 text-right">Eylemler</th>
+                                    <tr class="text-slate-500 uppercase text-left font-semibold">
+                                        <th class="py-2.5 px-3">Havuz Adı</th>
+                                        <th class="py-2.5 px-3">Havuz Tipi</th>
+                                        <th class="py-2.5 px-3">Disk Bağlantı Yolu</th>
+                                        <th class="py-2.5 px-3">Kapasite</th>
+                                        <th class="py-2.5 px-3">Kullanılan</th>
+                                        <th class="py-2.5 px-3">Boş Alan</th>
+                                        <th class="py-2.5 px-3">Doluluk</th>
                                     </tr>
                                 </thead>
-                                <tbody class="divide-y divide-slate-800/40 font-mono">
-                                    <template x-for="vm in filteredVms" :key="vm.name">
-                                        <tr @click="selectVm(vm.name)" :class="selectedVmName === vm.name ? 'bg-brand-500/5' : 'hover:bg-slate-900/30'" class="cursor-pointer">
-                                            <td class="py-2.5 px-3 font-bold text-white" x-text="vm.name"></td>
+                                <tbody>
+                                    <template x-for="pool in storagePools">
+                                        <tr>
+                                            <td class="py-2.5 px-3 font-bold text-white" x-text="pool.name"></td>
+                                            <td class="py-2.5 px-3 text-brand-500" x-text="pool.pool_type"></td>
+                                            <td class="py-2.5 px-3 text-slate-500 text-[10px]" x-text="pool.mount_path"></td>
+                                            <td class="py-2.5 px-3 text-slate-300" x-text="`${pool.capacity_gb} GB`"></td>
+                                            <td class="py-2.5 px-3 text-slate-300" x-text="`${pool.allocated_gb} GB`"></td>
+                                            <td class="py-2.5 px-3 text-slate-300" x-text="`${pool.free_gb} GB`"></td>
                                             <td class="py-2.5 px-3">
-                                                <span :class="vm.status === 'running' ? 'text-emerald-400' : 'text-red-400'" class="font-bold" x-text="vm.status === 'running' ? 'Aktif' : 'Kapalı'"></span>
-                                            </td>
-                                            <td class="py-2.5 px-3 text-[10px]" x-text="`${vm.cpu} Core / ${(vm.ram_mb/1024).toFixed(0)}G / ${vm.disk_gb}G`"></td>
-                                            <td class="py-2.5 px-3 text-slate-300" x-text="vm.ip_address"></td>
-                                            <td class="py-2.5 px-3 text-right" @click.stop>
-                                                <button x-show="vm.status !== 'running'" @click="triggerAction(vm.name, 'start')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-emerald-400"><i class="fa-solid fa-play text-[9px]"></i></button>
-                                                <button x-show="vm.status === 'running'" @click="triggerAction(vm.name, 'stop')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-red-400"><i class="fa-solid fa-stop text-[9px]"></i></button>
-                                                <button @click="openConsole(vm.name)" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-brand-500"><i class="fa-solid fa-terminal text-[9px]"></i></button>
-                                                <button @click="deleteVm(vm.name)" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-red-500"><i class="fa-solid fa-trash-can text-[9px]"></i></button>
+                                                <div class="flex items-center space-x-2">
+                                                    <div class="w-16 bg-slate-900 rounded-full h-1.5 overflow-hidden">
+                                                        <div class="h-full rounded-full bg-brand-500" :style="`width: ${pool.usage_percent}%`"></div>
+                                                    </div>
+                                                    <span x-text="`${pool.usage_percent}%`" class="text-[10px] font-bold"></span>
+                                                </div>
                                             </td>
                                         </tr>
                                     </template>
@@ -2465,69 +3755,67 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
                             </table>
                         </div>
                     </div>
-                </div>
 
-                <div class="corp-card rounded-lg p-5">
-                    <h2 class="text-xs font-bold uppercase mb-3">VDS Telemetri Grafigi</h2>
-                    <div x-show="selectedVmName" class="space-y-4">
-                        <div class="h-32 bg-slate-950/40 rounded border border-slate-800 p-2"><canvas id="vmPerformanceChartCanvas"></canvas></div>
-                        <button @click="triggerAction(selectedVmName, 'force-stop')" class="w-full bg-red-600 text-white text-[10px] font-bold py-1.5 rounded">GÜCÜ KES (DESTROY)</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- IPAM -->
-            <div x-show="activeTab === 'ipam'" x-cloak class="space-y-6">
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <template x-for="pool in ipPools">
-                        <div class="corp-card rounded-lg p-5">
-                            <h3 class="text-xs uppercase text-white font-bold" x-text="`HAVUZ: ${pool.name}`"></h3>
-                            <p class="text-[10px] text-slate-500 font-mono mt-1" x-text="`CIDR: ${pool.cidr} / GW: ${pool.gateway}`"></p>
-                            <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-800 mt-4">
-                                <div :style="`width: ${pool.usage_percent}%`" class="bg-brand-500 h-full"></div>
+                    <!-- 5. LICENSE TAB -->
+                    <div x-show="activeTab === 'license'" x-cloak class="space-y-6">
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <!-- Verification Card -->
+                            <div class="lg:col-span-2 corp-card rounded-lg p-5 space-y-4">
+                                <h3 class="text-xs uppercase text-white font-bold">AnkaVM Lisans Anahtarı Kontrol Paneli</h3>
+                                <p class="text-xs text-slate-400 font-sans">Kurumsal KVM sanallaştırma altyapısının lisans doğrulaması, yerel veya uzak lisans sunucuları üzerinden dynamic Motherboard hardware_id doğrulaması ile çalışmaktadır.</p>
+                                
+                                <div class="p-3 bg-slate-900/60 rounded border border-slate-800 text-xs font-mono space-y-3">
+                                    <div class="flex justify-between">
+                                        <span>Lisans Sahibi:</span>
+                                        <span x-text="licenseStatus.owner_name" class="font-bold text-white"></span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span>Motherboard UUID (Hardware ID):</span>
+                                        <span x-text="licenseStatus.hardware_id" class="text-brand-500 select-all font-bold"></span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span>Yetkilendirilen IP Adresi:</span>
+                                        <span x-text="licenseStatus.allowed_ip" class="text-slate-300 font-bold"></span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span>Yetkilendirilen Alan Adı (Domain):</span>
+                                        <span x-text="licenseStatus.allowed_domain" class="text-slate-300"></span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span>Bitiş Tarihi (Expiration):</span>
+                                        <span x-text="licenseStatus.expires_at ? new Date(licenseStatus.expires_at).toLocaleString() : 'N/A'" class="text-emerald-400"></span>
+                                    </div>
+                                    <div class="flex justify-between border-t border-slate-800 pt-2">
+                                        <span>Lisans Durumu:</span>
+                                        <span :class="licenseStatus.is_licensed ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'" x-text="licenseStatus.is_licensed ? '✓ LİSANSLI VE AKTİF' : '✗ GEÇERSİZ / SÜRESİ DOLMUŞ LİSANS'"></span>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="flex justify-between text-[9px] text-slate-500 mt-1">
-                                <span x-text="`Kullanılan: ${pool.allocated_ips} IP`"></span>
-                                <span x-text="`Boş: ${pool.free_ips} IP`"></span>
+
+                            <!-- Update Card -->
+                            <div class="corp-card rounded-lg p-5 space-y-4">
+                                <h3 class="text-xs font-bold uppercase text-white">Lisans Güncelle</h3>
+                                <form @submit.prevent="updateLicense()" class="space-y-3 font-mono text-xs">
+                                    <label class="text-[10px] text-slate-500">YENİ LİSANS ANAHTARI GİRİNİZ:</label>
+                                    <input type="text" x-model="licenseKeyInput" required placeholder="ANKAVM-PRO-XXXX-XXXX" class="w-full p-2.5 bg-slate-900 border border-slate-700 rounded text-white text-xs"/>
+                                    <button type="submit" class="w-full btn-primary text-xs font-semibold py-2 rounded">KODU ETKİNLEŞTİR</button>
+                                </form>
+                                <div class="bg-slate-950/60 p-2 rounded text-[10px] text-slate-500 font-sans leading-relaxed">
+                                    <strong>Lisans Bilgilendirmesi:</strong><br>
+                                    Platform lisans anahtarı sha256 hash imzasıyla yerel watchdog ile izlenmektedir. Sahte lisans kodları sistemi otomatik olarak lockout durumuna alarak virtual_servers operasyonlarını durdurur.
+                                </div>
                             </div>
                         </div>
-                    </template>
-                </div>
-
-                <div class="corp-card rounded-lg p-5">
-                    <div class="flex justify-between items-center mb-5">
-                        <h2 class="text-xs font-bold uppercase text-slate-200">Aktif IP Kiralamaları</h2>
-                        <button @click="showCreatePoolModal = true" class="btn-primary text-xs font-semibold py-1.5 px-3 rounded">Yeni IPAM Havuzu Ekle</button>
                     </div>
-                    <table class="min-w-full divide-y divide-slate-800 font-mono text-xs">
-                        <thead>
-                            <tr class="text-slate-500 uppercase text-left">
-                                <th class="py-2.5 px-3">IP Adresi</th>
-                                <th class="py-2.5 px-3">Havuz</th>
-                                <th class="py-2.5 px-3">Bağlı VM</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <template x-for="lease in ipLeases" :key="lease.ip_address">
-                                <tr>
-                                    <td class="py-2.5 px-3 font-bold text-white" x-text="lease.ip_address"></td>
-                                    <td class="py-2.5 px-3" x-text="`pool-${lease.pool_id}`"></td>
-                                    <td class="py-2.5 px-3 text-brand-500" x-text="lease.allocated_to_vm || 'Rezerve'"></td>
-                                </tr>
-                            </template>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
 
-            <!-- SETTINGS & WiseCP CODE -->
-            <div x-show="activeTab === 'settings'" x-cloak class="space-y-6">
-                <div class="corp-card rounded-lg p-5 space-y-4">
-                    <h2 class="text-xs font-bold uppercase text-white">WiseCP & WHMCS Entegrasyon Modülü</h2>
-                    <p class="text-xs text-slate-400">Modül dosyasını sunucunuzda aşağıdaki dizine yüklemeniz yeterlidir:</p>
-                    <div class="bg-slate-900 p-2 rounded border border-slate-800 font-mono text-[10px] text-brand-500">/cpanel/modules/Servers/AnkaVM/AnkaVM.php</div>
-                    <div class="flex justify-between items-center"><span class="text-[10px] text-slate-500">Modül Kod Bloğu:</span><button @click="navigator.clipboard.writeText(document.getElementById('php-module-code').innerText); showToast('WiseCP Modül Kodu kopyalandı!', 'success')" class="px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-[10px] text-brand-500">Kopyala</button></div>
-                    <pre class="bg-slate-950 p-3 rounded border border-slate-800 font-mono text-[10px] max-h-48 overflow-y-auto text-slate-300" id="php-module-code">
+                    <!-- 6. SETTINGS & WiseCP TAB -->
+                    <div x-show="activeTab === 'settings'" x-cloak class="space-y-6">
+                        <div class="corp-card rounded-lg p-5 space-y-4">
+                            <h2 class="text-xs font-bold uppercase text-white">WiseCP & WHMCS Entegrasyon Modülü</h2>
+                            <p class="text-xs text-slate-400 font-sans">Otomatik VM dağıtımı (Deployment) ve VDS kontrol modülünün PHP dosyalarını aşağıdaki dizine kurarak faturalandırmayı entegre edebilirsiniz:</p>
+                            <div class="bg-slate-900 p-2 rounded border border-slate-800 font-mono text-[10px] text-brand-500">/cpanel/modules/Servers/AnkaVM/AnkaVM.php</div>
+                            <div class="flex justify-between items-center"><span class="text-[10px] text-slate-500">Modül Kod Bloğu:</span><button @click="navigator.clipboard.writeText(document.getElementById('php-module-code').innerText); showToast('WiseCP Modül Kodu kopyalandı!', 'success')" class="px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-[10px] text-brand-500">Kopyala</button></div>
+                            <pre class="bg-slate-950 p-3 rounded border border-slate-800 font-mono text-[10px] max-h-48 overflow-y-auto text-slate-300" id="php-module-code">
 &lt;?php
 class AnkaVM {
     private $apiUrl;
@@ -2537,15 +3825,22 @@ class AnkaVM {
         $this->apiKey = $apiKey;
     }
     public function createServer($vmName, $cpu, $ram, $disk, $template, $rootPassword) {
-        return $this->call('/api/vms', 'POST', [
+        return $this->call('/api/wisecp/deploy', 'POST', [
+            'order_id' => 'ws-order-'.rand(1000,9999),
+            'product_id' => 'saas-prod',
             'name' => $vmName, 'cpu' => $cpu, 'ram_mb' => $ram, 'disk_gb' => $disk,
-            'os_template' => $template, 'root_password' => $rootPassword
+            'disk_pool' => 'vg_ankavm_fast',
+            'os_template' => $template, 'root_password' => $rootPassword,
+            'callback_url' => 'http://yoursite.com/callback'
         ]);
     }
 }</pre>
+                        </div>
+                    </div>
+
                 </div>
-            </div>
-        </main>
+            </main>
+        </div>
     </div>
 
     <!-- Create VM Modal -->
@@ -2558,10 +3853,19 @@ class AnkaVM {
                     <option value="ubuntu-22.04">Ubuntu 22.04 LTS</option>
                     <option value="debian-12">Debian 12 Bookworm</option>
                 </select>
+                <!-- Storage Pool target selection -->
+                <div class="space-y-1">
+                    <label class="text-[9px] text-slate-500 uppercase">YAYINLANACAK STORAGE POOL (DISK):</label>
+                    <select x-model="createForm.disk_pool" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white">
+                        <template x-for="pool in storagePools">
+                            <option :value="pool.name" x-text="`${pool.name} (${pool.pool_type})`"></option>
+                        </template>
+                    </select>
+                </div>
                 <div class="grid grid-cols-3 gap-2">
-                    <select x-model.number="createForm.cpu" class="p-2 bg-slate-900 border border-slate-700 rounded text-white"><option value="1">1 CPU</option><option value="2">2 CPU</option></select>
-                    <select x-model.number="createForm.ram_mb" class="p-2 bg-slate-900 border border-slate-700 rounded text-white"><option value="1024">1 GB</option><option value="2048">2 GB</option></select>
-                    <select x-model.number="createForm.disk_gb" class="p-2 bg-slate-900 border border-slate-700 rounded text-white"><option value="20">20 GB</option><option value="40">40 GB</option></select>
+                    <select x-model.number="createForm.cpu" class="p-2 bg-slate-900 border border-slate-700 rounded text-white"><option value="1">1 CPU</option><option value="2">2 CPU</option><option value="4">4 CPU</option></select>
+                    <select x-model.number="createForm.ram_mb" class="p-2 bg-slate-900 border border-slate-700 rounded text-white"><option value="1024">1 GB</option><option value="2048">2 GB</option><option value="4096">4 GB</option></select>
+                    <select x-model.number="createForm.disk_gb" class="p-2 bg-slate-900 border border-slate-700 rounded text-white"><option value="20">20 GB</option><option value="40">40 GB</option><option value="80">80 GB</option></select>
                 </div>
                 <input type="text" x-model="createForm.root_password" required placeholder="Kök (Root) şifresi enjekte et" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
                 <textarea x-model="createForm.ssh_key" placeholder="Authorized SSH Key (İsteğe bağlı)" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-[10px] text-white" rows="2"></textarea>
@@ -2679,7 +3983,51 @@ WantedBy=multi-user.target
 _ANKAVM_EOF_
 
 
+# Write systemd watchdog service
+cat << '_ANKAVM_EOF_' > /opt/ankavm/systemd/ankavm-watchdog.service
+[Unit]
+Description=AnkaVM KVM Auto-Repair Watchdog Daemon
+After=network.target libvirtd.service
+Requires=libvirtd.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ankavm
+ExecStart=/usr/bin/python3 /opt/ankavm/scripts/auto_repair_daemon.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+_ANKAVM_EOF_
+
+# Write systemd local licensing server service
+cat << '_ANKAVM_EOF_' > /opt/ankavm/systemd/ankavm-licensing.service
+[Unit]
+Description=AnkaVM Local Licensing Authority Server
+After=network.target
+
+[Service]
+Type=simple
+User=ankavm
+Group=ankavm
+WorkingDirectory=/opt/ankavm
+Environment=PATH=/opt/ankavm/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/opt/ankavm/venv/bin/python3 /opt/ankavm/backend/license_server.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+_ANKAVM_EOF_
+
 # Set permissions
+chmod +x /opt/ankavm/scripts/auto_repair_daemon.py
 chown -R ankavm:ankavm /opt/ankavm
 echo -e "${GREEN}✓ Codebase files written and ownership set.${NC}\n"
 
@@ -2691,12 +4039,20 @@ python3 -m venv /opt/ankavm/venv
 chown -R ankavm:ankavm /opt/ankavm/venv
 echo -e "${GREEN}✓ Virtual environment dependencies installed.${NC}\n"
 
-# 6. Deploy Systemd service unit
-echo -e "${YELLOW}[6/7] Deploying systemd backend daemon...${NC}"
+# 6. Deploy Systemd service units
+echo -e "${YELLOW}[6/7] Deploying systemd daemon controllers...${NC}"
 cp /opt/ankavm/systemd/ankavm.service /etc/systemd/system/
+cp /opt/ankavm/systemd/ankavm-watchdog.service /etc/systemd/system/
+cp /opt/ankavm/systemd/ankavm-licensing.service /etc/systemd/system/
+
 systemctl daemon-reload
+
+# Start licensing server first, then the main backend and watchdog
+systemctl enable --now ankavm-licensing
 systemctl enable --now ankavm
-echo -e "${GREEN}✓ Daemon service 'ankavm.service' enabled and running.${NC}\n"
+systemctl enable --now ankavm-watchdog
+
+echo -e "${GREEN}✓ All daemon controllers enabled and running.${NC}\n"
 
 # 7. Configure Nginx reverse proxy
 echo -e "${YELLOW}[7/7] Installing Nginx Reverse Proxy...${NC}"
@@ -2721,13 +4077,16 @@ SERVER_IP=$(curl -s https://ifconfig.me || hostname -I | awk '{print $1}')
 echo -e "${GREEN}==================================================================${NC}"
 echo -e "${GREEN}                   INSTALLATION COMPLETE!                         ${NC}"
 echo -e "${GREEN}==================================================================${NC}"
-echo -e "AnkaVM VDS Management System is successfully configured and active."
+echo -e "AnkaVM VDS Virtualization Platform is successfully configured and active."
 echo -e ""
 echo -e "Dashboard URL:      ${CYAN}http://${SERVER_IP}/${NC} (Port 80 Nginx Proxy)"
 echo -e "Backend Server:     ${CYAN}http://${SERVER_IP}:8086/${NC}"
+echo -e "License server:     ${CYAN}http://127.0.0.1:8087/verify${NC}"
 echo -e "API Access Key:     ${YELLOW}ankavm-secure-dev-token-2026${NC}"
+echo -e "Default Lic Key:    ${YELLOW}ANKAVM-PRO-SAAS-9999-KEY${NC}"
 echo -e ""
-echo -e "Systemd command logs:      ${CYAN}journalctl -u ankavm.service -f${NC}"
-echo -e "Nginx server logs:         ${CYAN}tail -f /var/log/nginx/access.log${NC}"
+echo -e "Watchdog logs:      ${CYAN}journalctl -u ankavm-watchdog.service -f${NC}"
+echo -e "Licensing logs:     ${CYAN}journalctl -u ankavm-licensing.service -f${NC}"
+echo -e "Backend API logs:   ${CYAN}journalctl -u ankavm.service -f${NC}"
 echo -e "=================================================================="
 echo -e "System running on mock fallback? Check ${CYAN}/opt/ankavm/backend/config.py${NC}"

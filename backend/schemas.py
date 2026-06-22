@@ -7,6 +7,7 @@ class VMCreate(BaseModel):
     cpu: int = Field(1, ge=1, le=32, description="Number of vCPUs allocated")
     ram_mb: int = Field(1024, ge=512, le=131072, description="RAM allocation in Megabytes")
     disk_gb: int = Field(20, ge=5, le=2000, description="Disk volume size in Gigabytes")
+    disk_pool: Optional[str] = Field("default", description="Storage pool vg/zpool/directory name")
     os_template: str = Field("ubuntu-22.04", description="Operating system distribution template")
     root_password: Optional[str] = Field("AnkaVM-Secure-Root-2026", description="Administrator root password to inject")
     ssh_key: Optional[str] = Field(None, description="Authorized SSH public key to inject")
@@ -37,6 +38,7 @@ class VMResponse(BaseModel):
     cpu: int
     ram_mb: int
     disk_gb: int
+    disk_used_gb: Optional[float] = 2.5
     ip_address: Optional[str] = "192.168.122.100"
     vnc_port: Optional[int] = 5900
     os_template: str
@@ -78,3 +80,15 @@ class NetworkCreate(BaseModel):
         if not re.match(r"^[a-zA-Z0-9_-]+$", v):
             raise ValueError("Names must only contain alphanumeric characters, hyphens, and underscores")
         return v
+
+class WiseCPDeploy(BaseModel):
+    order_id: str
+    product_id: str
+    name: str
+    cpu: int
+    ram_mb: int
+    disk_gb: int
+    disk_pool: Optional[str] = "default"
+    os_template: str
+    root_password: str
+    callback_url: Optional[str] = None

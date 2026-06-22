@@ -9,7 +9,7 @@ document.addEventListener('alpine:init', () => {
 
     Alpine.data('vmPanel', () => ({
         // Tab system
-        activeTab: 'dashboard', // dashboard, vms, networks, ipam, storage, settings
+        activeTab: 'dashboard', // dashboard, vms, networks, ipam, storage, settings, license
         
         // Data States
         vms: [],
@@ -18,6 +18,16 @@ document.addEventListener('alpine:init', () => {
         activityLogs: [],
         ipPools: [],
         ipLeases: [],
+        ipamLogs: [],
+        licenseStatus: {
+            is_licensed: false,
+            owner_name: 'Sistem Yükleniyor...',
+            allowed_ip: '',
+            allowed_domain: '',
+            expires_at: '',
+            hardware_id: '',
+            detail: ''
+        },
         hostStats: {
             cpu_usage: 0,
             ram_total_gb: 0,
@@ -35,6 +45,7 @@ document.addEventListener('alpine:init', () => {
         // VDS Inspector Details
         selectedVmName: null,
         selectedVmTelemetry: null,
+        selectedVmTraffic: null,
         telemetryHistory: {
             cpu: [],
             ram: [],
@@ -54,6 +65,7 @@ document.addEventListener('alpine:init', () => {
         showCreateNetModal: false,
         showCreatePoolModal: false,
         showConsoleModal: false,
+        licenseKeyInput: '',
         
         // Provisioning forms
         createForm: {
@@ -61,6 +73,7 @@ document.addEventListener('alpine:init', () => {
             cpu: 2,
             ram_mb: 2048,
             disk_gb: 40,
+            disk_pool: 'default-dir',
             os_template: 'ubuntu-22.04',
             root_password: 'AnkaVM-Secure-Root-2026',
             ssh_key: ''
@@ -91,38 +104,48 @@ document.addEventListener('alpine:init', () => {
         termInstance: null,
 
         async init() {
-            console.log("Initializing Corporate Dashboard Controller with Automation...");
+            console.log("Initializing Corporate SaaS Dashboard Controller with Watchdog & Licensing...");
+            
+            toggleSkeletonLoaders(true);
             
             // Initial data pull
             await Promise.all([
+                this.fetchLicenseStatus(),
                 this.fetchVms(),
                 this.fetchHostStats(),
                 this.fetchNetworks(),
                 this.fetchStorage(),
                 this.fetchLogs(),
-                this.fetchIpamData()
+                this.fetchIpamData(),
+                this.fetchIpLogs()
             ]);
             
             this.loading = false;
+            toggleSkeletonLoaders(false);
             
             // Set up charts on next tick
             this.$nextTick(() => {
                 this.initHostCharts();
+                this.renderApexStorageCharts();
             });
 
             // Set up timers for data sync
             setInterval(() => this.fetchHostStats(), 4000);
             setInterval(() => this.fetchVms(), 5000);
             setInterval(() => this.fetchActiveVmTelemetry(), 3000);
+            setInterval(() => this.fetchActiveVmTraffic(), 3000);
             setInterval(() => this.fetchLogs(), 6000);
+            setInterval(() => this.fetchLicenseStatus(), 15000);
             setInterval(() => {
                 if (this.activeTab === 'networks') this.fetchNetworks();
                 if (this.activeTab === 'storage') this.fetchStorage();
-                if (this.activeTab === 'ipam') this.fetchIpamData();
+                if (this.activeTab === 'ipam') {
+                    this.fetchIpamData();
+                    this.fetchIpLogs();
+                }
             }, 8000);
         },
 
-        // Tab selection change hook
         setTab(tabName) {
             this.activeTab = tabName;
             
@@ -130,6 +153,7 @@ document.addEventListener('alpine:init', () => {
                 this.$nextTick(() => {
                     this.initHostCharts();
                     this.updateHostCharts();
+                    this.renderApexStorageCharts();
                 });
             }
             
@@ -141,6 +165,42 @@ document.addEventListener('alpine:init', () => {
         },
 
         // --- Fetch actions ---
+
+        async fetchLicenseStatus() {
+            try {
+                const res = await fetch(`${API_BASE}/license/status`);
+                if (res.ok) {
+                    this.licenseStatus = await res.json();
+                }
+            } catch (err) {
+                console.error("License check fail", err);
+            }
+        },
+
+        async updateLicense() {
+            if (!this.licenseKeyInput) {
+                this.showToast("Lütfen lisans anahtarınızı girin.", "warning");
+                return;
+            }
+            this.showToast("Lisans anahtarı güncelleniyor...", "info");
+            try {
+                const res = await fetch(`${API_BASE}/license/update`, {
+                    method: 'POST',
+                    headers: API_HEADERS,
+                    body: JSON.stringify({ license_key: this.licenseKeyInput })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    this.showToast(data.message, "success");
+                    this.licenseKeyInput = '';
+                    await this.fetchLicenseStatus();
+                } else {
+                    throw new Error(data.detail);
+                }
+            } catch (err) {
+                this.showToast(err.message, "error");
+            }
+        },
 
         async fetchVms() {
             try {
@@ -174,10 +234,13 @@ document.addEventListener('alpine:init', () => {
 
         async fetchStorage() {
             try {
-                const res = await fetch(`${API_BASE}/storage`, { headers: API_HEADERS });
-                if (res.ok) this.storagePools = await res.json();
+                const res = await fetch(`${API_BASE}/storage/pools`, { headers: API_HEADERS });
+                if (res.ok) {
+                    this.storagePools = await res.json();
+                    this.renderApexStorageCharts();
+                }
             } catch (err) {
-                console.error("Storage fetch failure", err);
+                console.error("Storage pools fetch failure", err);
             }
         },
 
@@ -201,6 +264,15 @@ document.addEventListener('alpine:init', () => {
                 if (leasesRes.ok) this.ipLeases = await leasesRes.json();
             } catch (err) {
                 console.error("IPAM fetch failure", err);
+            }
+        },
+
+        async fetchIpLogs() {
+            try {
+                const res = await fetch(`${API_BASE}/ipam/logs`, { headers: API_HEADERS });
+                if (res.ok) this.ipamLogs = await res.json();
+            } catch (err) {
+                console.error("IPAM logs fetch failure", err);
             }
         },
 
@@ -239,10 +311,32 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        async fetchActiveVmTraffic() {
+            if (!this.selectedVmName || this.activeTab !== 'vms') return;
+            const activeVm = this.vms.find(v => v.name === this.selectedVmName);
+            if (!activeVm || activeVm.status !== 'running') {
+                this.selectedVmTraffic = null;
+                return;
+            }
+            try {
+                const res = await fetch(`${API_BASE}/vms/${this.selectedVmName}/traffic`, { headers: API_HEADERS });
+                if (res.ok) {
+                    const traffic = await res.json();
+                    this.selectedVmTraffic = traffic;
+                    if (traffic.ddos_alert) {
+                        this.showToast(`🚨 UYARI: ${this.selectedVmName} sanal sunucusunda yüksek trafik (DDoS olasılığı) tespit edildi!`, 'warning');
+                    }
+                }
+            } catch (err) {
+                console.error("VM traffic metrics load failure", err);
+            }
+        },
+
         selectVm(name) {
             if (this.selectedVmName === name) {
                 this.selectedVmName = null;
                 this.selectedVmTelemetry = null;
+                this.selectedVmTraffic = null;
                 this.telemetryHistory = { cpu: [], ram: [], timestamps: [] };
                 return;
             }
@@ -252,6 +346,7 @@ document.addEventListener('alpine:init', () => {
             this.$nextTick(() => {
                 this.initVmPerformanceChart();
                 this.fetchActiveVmTelemetry();
+                this.fetchActiveVmTraffic();
             });
         },
 
@@ -267,7 +362,7 @@ document.addEventListener('alpine:init', () => {
                 if (!res.ok) throw new Error(data.detail || "İşlem başarısız.");
                 
                 this.showToast(data.message, 'success');
-                await Promise.all([this.fetchVms(), this.fetchLogs(), this.fetchIpamData()]);
+                await Promise.all([this.fetchVms(), this.fetchLogs()]);
             } catch (err) {
                 this.showToast(err.message, 'error');
             }
@@ -286,7 +381,7 @@ document.addEventListener('alpine:init', () => {
                 if (!res.ok) throw new Error(data.detail || "Kurulum başarısız.");
                 
                 this.showToast(`VDS '${data.name}' başarıyla oluşturuldu ve başlatıldı.`, 'success');
-                this.createForm = { name: '', cpu: 2, ram_mb: 2048, disk_gb: 40, os_template: 'ubuntu-22.04', root_password: 'AnkaVM-Secure-Root-2026', ssh_key: '' };
+                this.createForm = { name: '', cpu: 2, ram_mb: 2048, disk_gb: 40, disk_pool: 'default-dir', os_template: 'ubuntu-22.04', root_password: 'AnkaVM-Secure-Root-2026', ssh_key: '' };
                 await Promise.all([this.fetchVms(), this.fetchLogs(), this.fetchIpamData()]);
             } catch (err) {
                 this.showToast(err.message, 'error');
@@ -308,7 +403,7 @@ document.addEventListener('alpine:init', () => {
                 
                 this.showToast(data.message, 'success');
                 if (this.selectedVmName === name) this.selectedVmName = null;
-                await Promise.all([this.fetchVms(), this.fetchLogs(), this.fetchIpamData()]);
+                await Promise.all([this.fetchVms(), this.fetchLogs(), this.fetchIpamData(), this.fetchIpLogs()]);
             } catch (err) {
                 this.showToast(err.message, 'error');
             }
@@ -337,16 +432,14 @@ document.addEventListener('alpine:init', () => {
         },
 
         async provisionIpPool() {
-            // Simulated adding IP pool via networks post config
             this.showToast(`IP Havuzu ekleniyor: ${this.createPoolForm.name}`, 'info');
             this.showCreatePoolModal = false;
             
-            // In mock configurations, we can define a virtual bridge to trigger VMManager network mapping
             const mockNet = {
                 name: this.createPoolForm.name,
                 bridge: 'virbr' + (this.networks.length + 1),
                 ip: this.createPoolForm.gateway,
-                dhcp_start: this.createPoolForm.dns_primary, // mapping parameters
+                dhcp_start: this.createPoolForm.dns_primary,
                 dhcp_end: this.createPoolForm.dns_secondary
             };
             
@@ -363,6 +456,20 @@ document.addEventListener('alpine:init', () => {
                 }
             } catch (err) {
                 this.showToast(err.message, 'error');
+            }
+        },
+
+        // --- Render ApexCharts ---
+
+        renderApexStorageCharts() {
+            if (this.storagePools.length > 0) {
+                const allocated = this.storagePools.map(p => parseFloat(p.allocated_gb));
+                const free = this.storagePools.map(p => parseFloat(p.free_gb));
+                const categories = this.storagePools.map(p => p.name);
+                
+                this.$nextTick(() => {
+                    initStorageHealthChart('storagePoolApexChart', allocated, free, categories);
+                });
             }
         },
 
@@ -402,9 +509,9 @@ document.addEventListener('alpine:init', () => {
             if (this.hostRamChart) this.hostRamChart.destroy();
             if (this.hostDiskChart) this.hostDiskChart.destroy();
 
-            this.hostCpuChart = new Chart(cpuEl, chartConfig('#00f0ff'));
-            this.hostRamChart = new Chart(ramEl, chartConfig('#ff007f'));
-            this.hostDiskChart = new Chart(diskEl, chartConfig('#39ff14'));
+            this.hostCpuChart = new Chart(cpuEl, chartConfig('#3b82f6'));
+            this.hostRamChart = new Chart(ramEl, chartConfig('#10b981'));
+            this.hostDiskChart = new Chart(diskEl, chartConfig('#ef4444'));
         },
 
         updateHostCharts() {
@@ -434,20 +541,20 @@ document.addEventListener('alpine:init', () => {
                     labels: this.telemetryHistory.timestamps,
                     datasets: [
                         {
-                            label: 'CPU Core Usage (%)',
+                            label: 'CPU Kullanımı (%)',
                             data: this.telemetryHistory.cpu,
-                            borderColor: '#00f0ff',
-                            backgroundColor: 'rgba(0, 240, 255, 0.05)',
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.05)',
                             fill: true,
                             tension: 0.4,
                             borderWidth: 2,
                             pointRadius: 1
                         },
                         {
-                            label: 'Memory Load (%)',
+                            label: 'RAM Yükü (%)',
                             data: this.telemetryHistory.ram,
-                            borderColor: '#ff007f',
-                            backgroundColor: 'rgba(255, 0, 127, 0.05)',
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.05)',
                             fill: true,
                             tension: 0.4,
                             borderWidth: 2,
@@ -472,7 +579,7 @@ document.addEventListener('alpine:init', () => {
                     },
                     plugins: {
                         legend: {
-                            labels: { color: '#e2e8f0', font: { family: 'Orbitron', size: 10 } }
+                            labels: { color: '#e2e8f0', font: { size: 10 } }
                         }
                     }
                 }
@@ -487,7 +594,7 @@ document.addEventListener('alpine:init', () => {
             this.vmPerformanceChart.update('none');
         },
 
-        // --- Xterm.js Terminal WebSocket Console ---
+        // --- Xterm.js Terminal Console ---
 
         openConsole(vmName) {
             this.showConsoleModal = true;
@@ -519,16 +626,16 @@ document.addEventListener('alpine:init', () => {
             this.termInstance = new Terminal({
                 theme: {
                     background: '#070a13',
-                    foreground: '#00f0ff',
-                    cursor: '#00f0ff',
-                    selectionBackground: 'rgba(0, 240, 255, 0.3)',
+                    foreground: '#3b82f6',
+                    cursor: '#3b82f6',
+                    selectionBackground: 'rgba(59, 130, 246, 0.3)',
                     black: '#000000',
                     red: '#ff3838',
-                    green: '#39ff14',
+                    green: '#10b981',
                     yellow: '#ffd700',
-                    blue: '#00f0ff',
-                    magenta: '#ff007f',
-                    cyan: '#00f0ff',
+                    blue: '#3b82f6',
+                    magenta: '#d946ef',
+                    cyan: '#06b6d4',
                     white: '#ffffff'
                 },
                 cursorBlink: true,

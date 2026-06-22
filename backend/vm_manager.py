@@ -200,8 +200,11 @@ class VMManager:
             db = self._read_mock_db()
             if name in db:
                 db[name]["status"] = status
+                if "disk_used_gb" not in db[name]:
+                    db[name]["disk_used_gb"] = round(db[name]["disk_gb"] * 0.15 + random.uniform(1.0, 5.0), 1)
+                    self._write_mock_db(db)
                 return VMResponse(**db[name])
-            return VMResponse(name=name, status=status, cpu=1, ram_mb=1024, disk_gb=20, os_template="unknown")
+            return VMResponse(name=name, status=status, cpu=1, ram_mb=1024, disk_gb=20, disk_used_gb=1.5, os_template="unknown")
 
         try:
             result = self._run_secure_cmd(["/usr/bin/virsh", "dumpxml", name])
@@ -219,12 +222,31 @@ class VMManager:
             vnc_port = int(vnc_match.group(1)) if vnc_match else 5900
             ip_address = self._get_vm_ip(name)
 
+            disk_used_gb = 2.5
+            disk_gb = 20
+            try:
+                blk_out = self._run_secure_cmd(["/usr/bin/virsh", "domblkinfo", name, "vda"]).stdout
+                alloc_match = re.search(r"Allocation:\s+(\d+)", blk_out)
+                cap_match = re.search(r"Capacity:\s+(\d+)", blk_out)
+                if alloc_match:
+                    disk_used_gb = round(int(alloc_match.group(1)) / (1024**3), 1)
+                if cap_match:
+                    disk_gb = int(int(cap_match.group(1)) / (1024**3))
+            except Exception:
+                try:
+                    disk_path = f"{LIBVIRT_IMAGES_DIR}/{name}.qcow2"
+                    if os.path.exists(disk_path):
+                        disk_used_gb = round(os.path.getsize(disk_path) / (1024**3), 1)
+                except Exception:
+                    pass
+
             return VMResponse(
                 name=name,
                 status=status,
                 cpu=cpu,
                 ram_mb=ram_mb,
-                disk_gb=20,
+                disk_gb=disk_gb,
+                disk_used_gb=disk_used_gb,
                 ip_address=ip_address,
                 vnc_port=vnc_port,
                 os_template="ubuntu-22.04"
@@ -236,6 +258,7 @@ class VMManager:
                 cpu=1,
                 ram_mb=1024,
                 disk_gb=20,
+                disk_used_gb=2.5,
                 ip_address="192.168.122.100",
                 vnc_port=5900,
                 os_template="ubuntu-22.04"
@@ -304,10 +327,18 @@ class VMManager:
             gateway="192.168.122.1"
         )
 
+        target_pool = vm.disk_pool or "default"
+        pools = self.list_storage_pools()
+        chosen_pool = next((p for p in pools if p["name"] == target_pool), None)
+        if not chosen_pool:
+            chosen_pool = {"name": "default-dir", "pool_type": "DIRECTORY", "mount_path": LIBVIRT_IMAGES_DIR}
+
+        pool_type = chosen_pool.get("pool_type", "DIRECTORY")
+        pool_path = chosen_pool.get("mount_path", LIBVIRT_IMAGES_DIR)
+
         if IS_MOCK:
             db = self._read_mock_db()
             if vm.name in db:
-                # Release IP if vm already exists
                 self.ipam.release_ip(allocated_ip)
                 raise ValueError(f"VM with name '{vm.name}' already exists.")
             
@@ -317,47 +348,48 @@ class VMManager:
                 "cpu": vm.cpu,
                 "ram_mb": vm.ram_mb,
                 "disk_gb": vm.disk_gb,
+                "disk_used_gb": round(vm.disk_gb * 0.1, 1),
                 "ip_address": allocated_ip,
                 "vnc_port": 5900 + len(db),
                 "os_template": vm.os_template
             }
             db[vm.name] = new_vm
             self._write_mock_db(db)
-            self._add_log("SUCCESS", f"Yeni VDS oluşturuldu: '{vm.name}' ({allocated_ip}).")
+            self._add_log("SUCCESS", f"Yeni VDS oluşturuldu: '{vm.name}' ({allocated_ip}) pool: '{target_pool}'.")
+            self._log_ipam_action(allocated_ip, "LEASE", vm.name)
             return VMResponse(**new_vm)
 
-        # Real Execution using qemu-img backing templates and virt-install ISO mount
-        disk_path = f"{LIBVIRT_IMAGES_DIR}/{vm.name}.qcow2"
-        template_img = f"{LIBVIRT_IMAGES_DIR}/templates/{vm.os_template}.qcow2"
-        
-        # Ensure templates directory is active
-        os.makedirs(os.path.dirname(template_img), exist_ok=True)
-        
-        # Create backing copy-on-write image
-        if os.path.exists(template_img):
-            # Instant provisioning from master template
-            self._run_secure_cmd([
-                "/usr/bin/qemu-img", "create", "-f", "qcow2",
-                "-b", template_img, "-F", "qcow2", disk_path
-            ])
-            # Resize volume allocation to target parameters
-            self._run_secure_cmd([
-                "/usr/bin/qemu-img", "resize", disk_path, f"{vm.disk_gb}G"
-            ])
+        disk_path = ""
+        if pool_type == "LVM":
+            disk_path = f"/dev/{chosen_pool['name']}/{vm.name}"
+            self._run_secure_cmd(["/sbin/lvcreate", "-L", f"{vm.disk_gb}G", "-n", vm.name, chosen_pool["name"]])
+            template_img = f"{LIBVIRT_IMAGES_DIR}/templates/{vm.os_template}.qcow2"
+            if os.path.exists(template_img):
+                self._run_secure_cmd(["dd", f"if={template_img}", f"of={disk_path}", "bs=4M", "status=none"])
+                self._run_secure_cmd(["/sbin/lvresize", "-L", f"{vm.disk_gb}G", disk_path])
+        elif pool_type == "ZFS":
+            disk_path = f"/dev/zvol/{chosen_pool['name']}/{vm.name}"
+            self._run_secure_cmd(["/sbin/zfs", "create", "-V", f"{vm.disk_gb}G", f"{chosen_pool['name']}/{vm.name}"])
+            template_img = f"{LIBVIRT_IMAGES_DIR}/templates/{vm.os_template}.qcow2"
+            if os.path.exists(template_img):
+                self._run_secure_cmd(["dd", f"if={template_img}", f"of={disk_path}", "bs=4M", "status=none"])
         else:
-            # Fallback to empty image if master template not available yet
-            self._run_secure_cmd([
-                "/usr/bin/qemu-img", "create", "-f", "qcow2",
-                disk_path, f"{vm.disk_gb}G"
-            ])
+            disk_path = f"{pool_path}/{vm.name}.qcow2"
+            template_img = f"{LIBVIRT_IMAGES_DIR}/templates/{vm.os_template}.qcow2"
+            os.makedirs(pool_path, exist_ok=True)
+            if os.path.exists(template_img):
+                self._run_secure_cmd(["/usr/bin/qemu-img", "create", "-f", "qcow2", "-b", template_img, "-F", "qcow2", disk_path])
+                self._run_secure_cmd(["/usr/bin/qemu-img", "resize", disk_path, f"{vm.disk_gb}G"])
+            else:
+                self._run_secure_cmd(["/usr/bin/qemu-img", "create", "-f", "qcow2", disk_path, f"{vm.disk_gb}G"])
 
         cmd = [
             "/usr/bin/virt-install",
             "--name", vm.name,
             "--vcpus", str(vm.cpu),
             "--memory", str(vm.ram_mb),
-            "--disk", f"path={disk_path},format=qcow2,bus=virtio",
-            "--disk", f"path={seed_iso_path},device=cdrom", # Mount Cloud-init configuration seed
+            "--disk", f"path={disk_path},bus=virtio",
+            "--disk", f"path={seed_iso_path},device=cdrom",
             "--network", f"bridge={DEFAULT_BRIDGE},model=virtio",
             "--graphics", "vnc,listen=0.0.0.0",
             "--noautoconsole",
@@ -367,12 +399,22 @@ class VMManager:
         
         try:
             self._run_secure_cmd(cmd)
-            self._add_log("SUCCESS", f"Yeni VDS başarıyla kuruldu ve IPAM IP atandı: '{vm.name}' ({allocated_ip})")
+            self._add_log("SUCCESS", f"Yeni VDS kuruldu ve IPAM IP atandı: '{vm.name}' ({allocated_ip}) pool: '{target_pool}'")
+            self._log_ipam_action(allocated_ip, "LEASE", vm.name)
             return self.get_vm_details(vm.name, "running")
         except Exception as e:
-            # Cleanup resources on failure
             self.ipam.release_ip(allocated_ip)
             CloudInitBuilder.cleanup_seed_iso(vm.name)
+            try:
+                if pool_type == "LVM":
+                    self._run_secure_cmd(["/sbin/lvremove", "-f", disk_path])
+                elif pool_type == "ZFS":
+                    self._run_secure_cmd(["/sbin/zfs", "destroy", "-f", f"{chosen_pool['name']}/{vm.name}"])
+                else:
+                    if os.path.exists(disk_path):
+                        os.remove(disk_path)
+            except Exception:
+                pass
             raise e
 
     def delete_vm(self, name: str) -> str:
@@ -394,6 +436,7 @@ class VMManager:
         # Release IP and delete cloud-init seed files
         self.ipam.release_ip(vm_ip)
         CloudInitBuilder.cleanup_seed_iso(name)
+        self._log_ipam_action(vm_ip, "RELEASE", name)
 
         if IS_MOCK:
             db = self._read_mock_db()
@@ -405,6 +448,21 @@ class VMManager:
             return f"VM '{name}' deleted successfully (Mock)"
 
         # Real Execution
+        # 1. Clean up storage pools (LVM or ZFS) before undefining the VM
+        try:
+            domxml = self._run_secure_cmd(["/usr/bin/virsh", "dumpxml", name]).stdout
+            # Look for dev='...' in source disk elements
+            dev_matches = re.findall(r"<source [^>]*dev='([^']+)'", domxml)
+            for dev_path in dev_matches:
+                if "/dev/zvol/" in dev_path:
+                    zvol_name = dev_path.replace("/dev/zvol/", "")
+                    self._run_secure_cmd(["/sbin/zfs", "destroy", "-f", zvol_name])
+                elif "/dev/" in dev_path and not dev_path.startswith("/dev/sd") and not dev_path.startswith("/dev/vd"):
+                    self._run_secure_cmd(["/sbin/lvremove", "-f", dev_path])
+        except Exception as e:
+            print(f"LVM/ZFS volume cleanup warning: {e}")
+
+        # 2. Halt and undefine VM
         try:
             self._run_secure_cmd(["/usr/bin/virsh", "destroy", name])
         except Exception:
@@ -514,76 +572,137 @@ class VMManager:
     # --- Virtual Storage Pool Operations ---
 
     def list_storage_pools(self) -> List[Dict[str, Any]]:
+        pools = []
         if IS_MOCK:
-            return [
+            pools = [
                 {
-                    "name": "default",
-                    "status": "active",
-                    "path": LIBVIRT_IMAGES_DIR,
+                    "name": "default-dir",
+                    "pool_type": "DIRECTORY",
+                    "mount_path": LIBVIRT_IMAGES_DIR,
                     "capacity_gb": 500.0,
-                    "allocation_gb": 180.5,
-                    "free_gb": 319.5,
-                    "usage_percent": 36.1,
-                    "volume_count": len(self.list_vms())
+                    "allocated_gb": 180.0,
+                    "free_gb": 320.0,
+                    "usage_percent": 36.0,
+                    "is_active": True
                 },
                 {
-                    "name": "iso-templates",
-                    "status": "active",
-                    "path": "/var/lib/libvirt/boot",
-                    "capacity_gb": 150.0,
-                    "allocation_gb": 45.0,
-                    "free_gb": 105.0,
+                    "name": "vg_ankavm_fast",
+                    "pool_type": "LVM",
+                    "mount_path": "/dev/vg_ankavm_fast",
+                    "capacity_gb": 2000.0,
+                    "allocated_gb": 850.0,
+                    "free_gb": 1150.0,
+                    "usage_percent": 42.5,
+                    "is_active": True
+                },
+                {
+                    "name": "zpool_hybrid",
+                    "pool_type": "ZFS",
+                    "mount_path": "zpool_hybrid/vds",
+                    "capacity_gb": 4000.0,
+                    "allocated_gb": 1200.0,
+                    "free_gb": 2800.0,
                     "usage_percent": 30.0,
-                    "volume_count": 4
+                    "is_active": True
                 }
             ]
-
-        try:
-            result = self._run_secure_cmd(["/usr/bin/virsh", "pool-list", "--all"])
-            pools = []
-            lines = result.stdout.strip().split("\n")
-            if len(lines) > 2:
-                for line in lines[2:]:
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        name = parts[0]
-                        status = parts[1]
-                        
-                        info_out = self._run_secure_cmd(["/usr/bin/virsh", "pool-info", name]).stdout
-                        cap_match = re.search(r"Capacity:\s+([\d\.]+)\s+(\w+)", info_out)
-                        alloc_match = re.search(r"Allocation:\s+([\d\.]+)\s+(\w+)", info_out)
-                        free_match = re.search(r"Available:\s+([\d\.]+)\s+(\w+)", info_out)
-                        
-                        def to_gb(val, unit):
-                            v = float(val)
-                            if "GiB" in unit or "GB" in unit:
-                                return v
-                            if "MiB" in unit or "MB" in unit:
-                                return v / 1024
-                            if "TiB" in unit or "TB" in unit:
-                                return v * 1024
-                            return v / (1024**3)
-
-                        cap = to_gb(cap_match.group(1), cap_match.group(2)) if cap_match else 100.0
-                        alloc = to_gb(alloc_match.group(1), alloc_match.group(2)) if alloc_match else 0.0
-                        free = to_gb(free_match.group(1), free_match.group(2)) if free_match else 100.0
-                        
-                        usage = (alloc / cap) * 100 if cap > 0 else 0
-
-                        pools.append({
-                            "name": name,
-                            "status": status,
-                            "path": LIBVIRT_IMAGES_DIR if name == "default" else f"/var/lib/libvirt/{name}",
-                            "capacity_gb": round(cap, 1),
-                            "allocation_gb": round(alloc, 1),
-                            "free_gb": round(free, 1),
-                            "usage_percent": round(usage, 1),
-                            "volume_count": len(self.list_vms()) if name == "default" else 2
-                        })
             return pools
+
+        # Real Execution - Directory Scanning (e.g. df)
+        try:
+            df_out = subprocess.check_output(["df", "-BG", LIBVIRT_IMAGES_DIR], text=True).strip().split("\n")
+            if len(df_out) > 1:
+                parts = df_out[1].split()
+                cap = float(parts[1].replace("G", ""))
+                used = float(parts[2].replace("G", ""))
+                free = float(parts[3].replace("G", ""))
+                pct = float(parts[4].replace("%", ""))
+                pools.append({
+                    "name": "default-dir",
+                    "pool_type": "DIRECTORY",
+                    "mount_path": LIBVIRT_IMAGES_DIR,
+                    "capacity_gb": cap,
+                    "allocated_gb": used,
+                    "free_gb": free,
+                    "usage_percent": pct,
+                    "is_active": True
+                })
         except Exception as e:
-            print(f"Error listing pools: {e}")
-            return []
+            print(f"Error scanning directory pool: {e}")
+
+        # Real LVM Scanning using vgs
+        try:
+            vgs_out = self._run_secure_cmd(["/sbin/vgs", "--units", "g", "--nosuffix", "--noheadings", "-o", "vg_name,vg_size,vg_free"]).stdout.strip()
+            for line in vgs_out.split("\n"):
+                if not line.strip():
+                    continue
+                parts = line.split()
+                if len(parts) >= 3:
+                    vg_name = parts[0]
+                    vg_size = float(parts[1])
+                    vg_free = float(parts[2])
+                    vg_used = round(vg_size - vg_free, 1)
+                    vg_pct = round((vg_used / vg_size) * 100, 1) if vg_size > 0 else 0
+                    pools.append({
+                        "name": vg_name,
+                        "pool_type": "LVM",
+                        "mount_path": f"/dev/{vg_name}",
+                        "capacity_gb": vg_size,
+                        "allocated_gb": vg_used,
+                        "free_gb": vg_free,
+                        "usage_percent": vg_pct,
+                        "is_active": True
+                    })
+        except Exception as e:
+            print(f"LVM vgs scan skipped or failed: {e}")
+
+        # Real ZFS Scanning using zpool list
+        try:
+            zpool_out = self._run_secure_cmd(["/sbin/zpool", "list", "-H", "-o", "name,size,alloc,free"]).stdout.strip()
+            for line in zpool_out.split("\n"):
+                if not line.strip():
+                    continue
+                parts = line.split()
+                if len(parts) >= 4:
+                    z_name = parts[0]
+                    def parse_zfs_size(val_str):
+                        val_str = val_str.upper()
+                        factor = 1.0
+                        if 'T' in val_str: factor = 1024.0
+                        if 'M' in val_str: factor = 1.0 / 1024.0
+                        num_str = "".join(c for c in val_str if c.isdigit() or c == '.')
+                        return round(float(num_str) * factor, 1) if num_str else 0.0
+
+                    z_size = parse_zfs_size(parts[1])
+                    z_alloc = parse_zfs_size(parts[2])
+                    z_free = parse_zfs_size(parts[3])
+                    z_pct = round((z_alloc / z_size) * 100, 1) if z_size > 0 else 0
+                    pools.append({
+                        "name": z_name,
+                        "pool_type": "ZFS",
+                        "mount_path": f"{z_name}/vds",
+                        "capacity_gb": z_size,
+                        "allocated_gb": z_alloc,
+                        "free_gb": z_free,
+                        "usage_percent": z_pct,
+                        "is_active": True
+                    })
+        except Exception as e:
+            print(f"ZFS scan skipped or failed: {e}")
+
+        if not pools:
+            pools.append({
+                "name": "default-dir",
+                "pool_type": "DIRECTORY",
+                "mount_path": LIBVIRT_IMAGES_DIR,
+                "capacity_gb": 100.0,
+                "allocated_gb": 10.0,
+                "free_gb": 90.0,
+                "usage_percent": 10.0,
+                "is_active": True
+            })
+
+        return pools
 
     def get_host_stats(self) -> HostStats:
         vms = self.list_vms()
@@ -692,3 +811,143 @@ class VMManager:
             disk_read_kbps=round(random.uniform(0.0, 10.0), 1),
             disk_write_kbps=round(random.uniform(0.1, 20.0), 1)
         )
+
+    def _log_ipam_action(self, ip: str, action_type: str, vm_name: str):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = {
+            "ip_address": ip,
+            "action_type": action_type,
+            "vm_name": vm_name,
+            "timestamp": timestamp
+        }
+        log_file = os.path.join(os.path.dirname(__file__), "mock_ipam_logs.json")
+        try:
+            logs = []
+            if os.path.exists(log_file):
+                with open(log_file, "r") as f:
+                    logs = json.load(f)
+            logs.insert(0, log_entry)
+            with open(log_file, "w") as f:
+                json.dump(logs[:100], f, indent=4)
+        except Exception:
+            pass
+
+    def get_ipam_logs(self) -> List[Dict[str, Any]]:
+        log_file = os.path.join(os.path.dirname(__file__), "mock_ipam_logs.json")
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, "r") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return [
+            {"ip_address": "192.168.122.10", "action_type": "LEASE", "vm_name": "web-prod-01", "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+            {"ip_address": "192.168.122.25", "action_type": "LEASE", "vm_name": "db-replica-02", "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        ]
+
+    def create_snapshot(self, vm_name: str, snap_name: str, desc: str) -> str:
+        self._sanitize_name(vm_name)
+        self._sanitize_name(snap_name)
+        if IS_MOCK:
+            self._add_log("SUCCESS", f"Sanal makine '{vm_name}' için '{snap_name}' anlık görüntüsü (snapshot) oluşturuldu.")
+            return f"Snapshot '{snap_name}' created (Mock)"
+        cmd = [
+            "/usr/bin/virsh", "snapshot-create-as", vm_name, snap_name, desc,
+            "--disk-only", "--atomic"
+        ]
+        self._run_secure_cmd(cmd)
+        self._add_log("SUCCESS", f"Sanal makine '{vm_name}' üzerinde '{snap_name}' anlık görüntüsü alındı.")
+        return f"Snapshot '{snap_name}' created successfully"
+
+    def revert_snapshot(self, vm_name: str, snap_name: str) -> str:
+        self._sanitize_name(vm_name)
+        self._sanitize_name(snap_name)
+        if IS_MOCK:
+            self._add_log("WARNING", f"Sanal makine '{vm_name}' anlık görüntü '{snap_name}' durumuna geri döndürüldü.")
+            return f"Reverted to snapshot '{snap_name}' (Mock)"
+        cmd = ["/usr/bin/virsh", "snapshot-revert", vm_name, snap_name]
+        self._run_secure_cmd(cmd)
+        self._add_log("WARNING", f"Sanal makine '{vm_name}' başarıyla geri döndürüldü: {snap_name}")
+        return f"Reverted to snapshot '{snap_name}' successfully"
+
+    def enable_rescue_mode(self, vm_name: str, iso_path: str = "/var/lib/libvirt/images/rescue.iso") -> str:
+        self._sanitize_name(vm_name)
+        if IS_MOCK:
+            self._add_log("WARNING", f"Sanal makine '{vm_name}' kurtarma modunda (Rescue Mode) başlatıldı.")
+            return f"Rescue mode enabled on VM '{vm_name}' (Mock)"
+        try:
+            self._run_secure_cmd(["/usr/bin/virsh", "destroy", vm_name])
+        except Exception:
+            pass
+        self._run_secure_cmd([
+            "/usr/bin/virsh", "attach-disk", vm_name, iso_path, "hda",
+            "--device", "cdrom", "--type", "raw", "--mode", "readonly", "--config"
+        ])
+        self._run_secure_cmd(["/usr/bin/virsh", "start", vm_name])
+        self._add_log("WARNING", f"Sanal makine '{vm_name}' Live-Rescue ISO ({iso_path}) ile başlatıldı.")
+        return f"Rescue mode enabled on VM '{vm_name}'"
+
+    def disable_rescue_mode(self, vm_name: str) -> str:
+        self._sanitize_name(vm_name)
+        if IS_MOCK:
+            self._add_log("INFO", f"Sanal makine '{vm_name}' normal önyükleme moduna geri döndürüldü.")
+            return f"Rescue mode disabled on VM '{vm_name}' (Mock)"
+        try:
+            self._run_secure_cmd(["/usr/bin/virsh", "destroy", vm_name])
+        except Exception:
+            pass
+        try:
+            self._run_secure_cmd(["/usr/bin/virsh", "change-media", vm_name, "hda", "--eject", "--config"])
+        except Exception:
+            pass
+        self._run_secure_cmd(["/usr/bin/virsh", "start", vm_name])
+        self._add_log("INFO", f"Sanal makine '{vm_name}' kurtarma modundan çıkarıldı.")
+        return f"Rescue mode disabled on VM '{vm_name}'"
+
+    def get_vm_traffic(self, vm_name: str) -> Dict[str, Any]:
+        self._sanitize_name(vm_name)
+        if IS_MOCK:
+            rx_bytes = random.randint(1000, 5000000)
+            tx_bytes = random.randint(500, 1000000)
+            rx_packets = int(rx_bytes / 1000)
+            tx_packets = int(tx_bytes / 1000)
+            ddos = rx_bytes > 4000000
+            return {
+                "vm_name": vm_name,
+                "rx_bytes_sec": rx_bytes,
+                "tx_bytes_sec": tx_bytes,
+                "rx_packets_sec": rx_packets,
+                "tx_packets_sec": tx_packets,
+                "ddos_alert": ddos
+            }
+        try:
+            mac_res = self._run_secure_cmd(["/usr/bin/virsh", "domiflist", vm_name])
+            vnet_match = re.search(r"(vnet\d+)\s+", mac_res.stdout)
+            if vnet_match:
+                interface = vnet_match.group(1)
+                vn_out = subprocess.check_output(["vnstat", "-i", interface, "--json"], text=True)
+                vn_data = json.loads(vn_out)
+                traffic = vn_data["interfaces"][0]["traffic"]
+                rx_bytes = int(traffic["total"]["rx"]) // 300
+                tx_bytes = int(traffic["total"]["tx"]) // 300
+                rx_packets = rx_bytes // 1200
+                tx_packets = tx_bytes // 1200
+                ddos = rx_bytes > 50000000
+                return {
+                    "vm_name": vm_name,
+                    "rx_bytes_sec": rx_bytes,
+                    "tx_bytes_sec": tx_bytes,
+                    "rx_packets_sec": rx_packets,
+                    "tx_packets_sec": tx_packets,
+                    "ddos_alert": ddos
+                }
+        except Exception:
+            pass
+        return {
+            "vm_name": vm_name,
+            "rx_bytes_sec": 500000,
+            "tx_bytes_sec": 120000,
+            "rx_packets_sec": 420,
+            "tx_packets_sec": 100,
+            "ddos_alert": False
+        }
