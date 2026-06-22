@@ -170,7 +170,7 @@ document.addEventListener('alpine:init', () => {
                     this.fetchIpLogs();
                 }
             }, 8000);
-        },,
+        },
 
         setTab(tabName) {
             this.activeTab = tabName;
