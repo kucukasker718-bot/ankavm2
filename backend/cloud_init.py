@@ -1,6 +1,7 @@
 import os
 import shutil
 import tempfile
+import json
 import subprocess
 from typing import Dict, Any, List, Optional
 from backend.config import IS_MOCK, LIBVIRT_IMAGES_DIR
