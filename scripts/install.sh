@@ -164,6 +164,9 @@ uvicorn>=0.28.0
 pydantic>=2.6.0
 psutil>=5.9.0
 websockets>=12.0
+pyvmomi>=8.0.1.0.2
+httpx>=0.27.0
+sqlalchemy>=2.0.0
 _ANKAVM_EOF_
 
 # Write backend/config.py
@@ -1671,6 +1674,9 @@ from backend.config import API_KEY, API_PORT, API_HOST, IS_MOCK, LICENSE_KEY
 from backend.schemas import VMCreate, VMResponse, HostStats, VMTelemetry, VMAction, NetworkCreate, WiseCPDeploy
 from backend.vm_manager import VMManager
 from backend.license_check import check_license_validity
+from backend import routers_vcenter
+from backend import routers_images
+from backend import routers_wisecp
 
 app = FastAPI(
     title="AnkaVM API Gateway",
@@ -1686,6 +1692,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(routers_vcenter.router)
+app.include_router(routers_images.router)
+app.include_router(routers_wisecp.router)
 
 # API Security token header
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -1725,22 +1735,9 @@ async def check_global_license(request: Request):
                 detail=f"License Check Failed. Hypervisor API Locked. Reason: {LICENSE_STATUS['detail']}"
             )
 
-# Apply global licensing middleware check
-@app.middleware("http")
-async def license_middleware(request: Request, call_next):
-    # Bypass for licensing status page and static files
-    path = request.url.path
-    if path.startswith("/api") and not (path == "/api/license/status" or path == "/api/license/update"):
-        if not LICENSE_STATUS["is_licensed"]:
-            # Try to re-verify once dynamically
-            sync_license_status()
-            if not LICENSE_STATUS["is_licensed"]:
-                return JSONResponse(
-                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                    content={"detail": f"License Required: {LICENSE_STATUS['detail']}"}
-                )
-    response = await call_next(request)
-    return response
+# Apply HWID based licensing middleware check
+from backend.license_middleware import hwid_license_middleware
+app.middleware("http")(hwid_license_middleware)
 
 from fastapi.responses import JSONResponse
 
@@ -1758,25 +1755,158 @@ async def verify_api_key(header_value: str = Security(api_key_header)):
 
 @app.get("/api/license/status")
 def get_license_status():
-    """Fetch current node licensing constraints and activation metadata."""
-    sync_license_status()
-    return LICENSE_STATUS
+    """Lisans durumunu ve bitiş tarihini döndürür."""
+    from backend.license_middleware import (
+        read_license_file, verify_license_key_signature,
+        is_license_expired
+    )
+    import subprocess
+    import datetime
+
+    data = read_license_file()
+
+    if not data:
+        try:
+            result = subprocess.run(
+                ["dmidecode", "-s", "system-uuid"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            hwid = result.stdout.strip() or "Alınamadı"
+        except Exception:
+            hwid = "Alınamadı"
+        return {
+            "is_licensed": False,
+            "owner_name": "Lisanssız Sunucu",
+            "hardware_id": hwid,
+            "expires_at": None,
+            "detail": "Lisans anahtarınızı giriniz."
+        }
+
+    valid, expiry_date_str = verify_license_key_signature(data["license_key"])
+    if not valid:
+        return {
+            "is_licensed": False,
+            "owner_name": "Geçersiz Lisans",
+            "hardware_id": data.get("hwid", "?"),
+            "expires_at": None,
+            "detail": "Lisans anahtarı geçersiz veya değiştirilmiş."
+        }
+
+    if is_license_expired(expiry_date_str):
+        return {
+            "is_licensed": False,
+            "owner_name": "Süresi Dolmuş",
+            "hardware_id": data["hwid"],
+            "expires_at": expiry_date_str,
+            "detail": f"Lisans süresi doldu! Lütfen yenileyin."
+        }
+
+    # Bitiş tarihi göstergesi
+    if expiry_date_str == "99991231":
+        expires_display = "Sonsuz (Lifetime)"
+    else:
+        d = datetime.datetime.strptime(expiry_date_str, "%Y%m%d").date()
+        expires_display = d.strftime("%d.%m.%Y")
+
+    return {
+        "is_licensed": True,
+        "owner_name": "AnkaVM Lisanslı Sunucu",
+        "hardware_id": data["hwid"],
+        "expires_at": expires_display,
+        "detail": "Lisans aktif ve doğrulandı."
+    }
+
 
 class LicenseUpdatePayload(BaseModel):
     license_key: str
 
+
 @app.post("/api/license/update")
-def update_license_key(payload: LicenseUpdatePayload, api_key: str = Depends(verify_api_key)):
-    """Updates node license key and re-handshakes verification server."""
-    os.environ["ANKAVM_LICENSE_KEY"] = payload.license_key
-    # We will modify the runtime key
-    import backend.config as config
-    config.LICENSE_KEY = payload.license_key
-    sync_license_status()
-    if LICENSE_STATUS["is_licensed"]:
-        return {"status": "success", "message": f"License key updated. Verified for {LICENSE_STATUS['owner_name']}"}
+def update_license_key(payload: LicenseUpdatePayload):
+    """Frontend'den girilen lisans anahtarını doğrular ve license.key dosyasını oluşturur."""
+    import subprocess
+    import base64
+    from backend.license_middleware import (
+        LICENSE_FILE_PATH, SALT,
+        verify_license_key_signature, is_license_expired
+    )
+
+    entered_key = payload.license_key.strip()
+
+    # 1. HMAC imza + format doğrulama
+    valid, expiry_date_str = verify_license_key_signature(entered_key)
+    if not valid:
+        raise HTTPException(
+            status_code=400,
+            detail="Geçersiz Lisans Anahtarı! Bu anahtar yetkili bir kaynak tarafından üretilmemiş."
+        )
+
+    # 2. Bitiş tarihi kontrolü
+    if is_license_expired(expiry_date_str):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Bu lisans anahtarının süresi dolmuş! ({expiry_date_str})"
+        )
+
+    # 3. Sunucunun HWID'ini al
+    try:
+        result = subprocess.run(
+            ["dmidecode", "-s", "system-uuid"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
+        )
+        hwid = result.stdout.strip()
+        if not hwid:
+            raise ValueError("HWID boş döndü")
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Sistem HWID alınamadı. install.sh root olarak çalıştırıldı mı? ({e})"
+        )
+
+    # 4. license.key dosyasını yaz: base64(hwid|license_key|SALT)
+    try:
+        raw = f"{hwid}|{entered_key}|{SALT}"
+        encoded = base64.b64encode(raw.encode('utf-8')).decode('utf-8')
+        os.makedirs(os.path.dirname(LICENSE_FILE_PATH), exist_ok=True)
+        with open(LICENSE_FILE_PATH, 'w') as f:
+            f.write(encoded)
+        os.chmod(LICENSE_FILE_PATH, 0o600)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lisans dosyası yazılamadı: {e}")
+
+    # 5. DB kayıt (opsiyonel)
+    try:
+        from backend.database import SessionLocal
+        from backend.models import License
+        import datetime
+        db = SessionLocal()
+        expire_dt = None if expiry_date_str == "99991231" else \
+            datetime.datetime.strptime(expiry_date_str, "%Y%m%d")
+        existing = db.query(License).filter(License.hwid == hwid).first()
+        if not existing:
+            db.add(License(hwid=hwid, status="active", expire_date=expire_dt))
+            db.commit()
+        else:
+            existing.status = "active"
+            existing.expire_date = expire_dt
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
+    import datetime
+    if expiry_date_str == "99991231":
+        expires_display = "Sonsuz (Lifetime)"
     else:
-        raise HTTPException(status_code=400, detail=f"Update failed: {LICENSE_STATUS['detail']}")
+        d = datetime.datetime.strptime(expiry_date_str, "%Y%m%d").date()
+        expires_display = d.strftime("%d.%m.%Y")
+
+    return {
+        "status": "success",
+        "message": f"Lisans başarıyla aktive edildi! Geçerlilik: {expires_display}"
+    }
+
+
 
 # --- 2. Storage Pool Management ---
 
@@ -2106,6 +2236,11 @@ async def vm_console_websocket(websocket: WebSocket, name: str):
         pass
 
 # --- 10. Serve Frontend Static Assets ---
+from backend.routers_vcenter import router as vcenter_router
+from backend.routers_license import router as license_router
+app.include_router(vcenter_router)
+app.include_router(license_router)
+
 FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
 if os.path.exists(FRONTEND_DIR):
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="static")
@@ -2113,6 +2248,7 @@ if os.path.exists(FRONTEND_DIR):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("backend.main:app", host=API_HOST, port=API_PORT, reload=True)
+
 _ANKAVM_EOF_
 
 # Write backend/license_check.py
@@ -2836,6 +2972,7 @@ document.addEventListener('alpine:init', () => {
         vms: [],
         networks: [],
         storagePools: [],
+        images: [],
         activityLogs: [],
         ipPools: [],
         ipLeases: [],
@@ -2895,6 +3032,15 @@ document.addEventListener('alpine:init', () => {
         showWiseCpSimulateModal: false,
         licenseKeyInput: '',
         
+        // VCenter State
+        vcenterConfig: {
+            host: '',
+            username: '',
+            password: '',
+            is_active: false
+        },
+        vcenterDiscovery: [],
+        
         // Provisioning forms
         createForm: {
             name: '',
@@ -2953,9 +3099,23 @@ document.addEventListener('alpine:init', () => {
             
             toggleSkeletonLoaders(true);
             
-            // Initial data pull
+            // İlk olarak lisans durumunu kontrol et
+            await this.fetchLicenseStatus();
+            
+            // Lisans yoksa veri çekmeyi ve interval'ları başlatma
+            if (!this.licenseStatus.is_licensed) {
+                this.loading = false;
+                toggleSkeletonLoaders(false);
+                return;
+            }
+            
+            // Lisanslıysa tüm sistemi başlat
+            await this.bootSystem();
+        },
+
+        async bootSystem() {
+            toggleSkeletonLoaders(true);
             await Promise.all([
-                this.fetchLicenseStatus(),
                 this.fetchVms(),
                 this.fetchHostStats(),
                 this.fetchNetworks(),
@@ -2963,8 +3123,17 @@ document.addEventListener('alpine:init', () => {
                 this.fetchLogs(),
                 this.fetchIpamData(),
                 this.fetchIpLogs(),
-                this.fetchWiseCpOrders()
+                this.fetchWiseCpOrders(),
+                this.fetchVcenterConfig()
             ]);
+            
+            // If vcenter is active, fetch discovery
+            if (this.vcenterConfig.is_active) {
+                this.fetchVcenterDiscovery();
+            }
+            
+            // Fetch images after vcenter is loaded
+            await this.fetchImages();
             
             this.loading = false;
             toggleSkeletonLoaders(false);
@@ -2976,21 +3145,24 @@ document.addEventListener('alpine:init', () => {
             });
  
             // Set up timers for data sync
-            setInterval(() => this.fetchHostStats(), 4000);
-            setInterval(() => this.fetchVms(), 5000);
-            setInterval(() => this.fetchActiveVmTelemetry(), 3000);
-            setInterval(() => this.fetchActiveVmTraffic(), 3000);
-            setInterval(() => this.fetchLogs(), 6000);
-            setInterval(() => this.fetchLicenseStatus(), 15000);
-            setInterval(() => this.fetchWiseCpOrders(), 5000);
-            setInterval(() => {
-                if (this.activeTab === 'networks') this.fetchNetworks();
-                if (this.activeTab === 'storage') this.fetchStorage();
-                if (this.activeTab === 'ipam') {
-                    this.fetchIpamData();
-                    this.fetchIpLogs();
-                }
-            }, 8000);
+            if(!this._intervalsStarted) {
+                setInterval(() => this.fetchHostStats(), 4000);
+                setInterval(() => this.fetchVms(), 5000);
+                setInterval(() => this.fetchActiveVmTelemetry(), 3000);
+                setInterval(() => this.fetchActiveVmTraffic(), 3000);
+                setInterval(() => this.fetchLogs(), 6000);
+                setInterval(() => this.fetchLicenseStatus(), 15000);
+                setInterval(() => this.fetchWiseCpOrders(), 5000);
+                setInterval(() => {
+                    if (this.activeTab === 'networks') this.fetchNetworks();
+                    if (this.activeTab === 'storage') this.fetchStorage();
+                    if (this.activeTab === 'ipam') {
+                        this.fetchIpamData();
+                        this.fetchIpLogs();
+                    }
+                }, 8000);
+                this._intervalsStarted = true;
+            }
         },
 
         setTab(tabName) {
@@ -3041,6 +3213,9 @@ document.addEventListener('alpine:init', () => {
                     this.showToast(data.message, "success");
                     this.licenseKeyInput = '';
                     await this.fetchLicenseStatus();
+                    if (this.licenseStatus.is_licensed) {
+                        await this.bootSystem();
+                    }
                 } else {
                     throw new Error(data.detail);
                 }
@@ -3079,6 +3254,57 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        async fetchVcenterConfig() {
+            try {
+                const res = await fetch(`${API_BASE}/vcenter/config`, { headers: API_HEADERS });
+                if (res.ok) {
+                    const data = await res.json();
+                    this.vcenterConfig.host = data.host;
+                    this.vcenterConfig.username = data.username;
+                    this.vcenterConfig.is_active = data.is_active;
+                }
+            } catch (err) {
+                console.error("VCenter fetch failure", err);
+            }
+        },
+
+        async saveVcenterConfig() {
+            this.showToast("VCenter'a bağlanılıyor...", "info");
+            try {
+                const res = await fetch(`${API_BASE}/vcenter/config`, {
+                    method: 'POST',
+                    headers: API_HEADERS,
+                    body: JSON.stringify({
+                        host: this.vcenterConfig.host,
+                        username: this.vcenterConfig.username,
+                        password: this.vcenterConfig.password
+                    })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    this.showToast(data.message, "success");
+                    this.vcenterConfig.is_active = true;
+                    this.vcenterConfig.password = ''; // clear for security
+                    await this.fetchVcenterDiscovery();
+                } else {
+                    throw new Error(data.detail || "VCenter bağlantı hatası");
+                }
+            } catch (err) {
+                this.showToast(err.message, "error");
+            }
+        },
+
+        async fetchVcenterDiscovery() {
+            try {
+                const res = await fetch(`${API_BASE}/vcenter/discovery`, { headers: API_HEADERS });
+                if (res.ok) {
+                    this.vcenterDiscovery = await res.json();
+                }
+            } catch (err) {
+                console.error("VCenter discovery fetch failure", err);
+            }
+        },
+
         async fetchStorage() {
             try {
                 const res = await fetch(`${API_BASE}/storage/pools`, { headers: API_HEADERS });
@@ -3087,7 +3313,7 @@ document.addEventListener('alpine:init', () => {
                     this.renderApexStorageCharts();
                 }
             } catch (err) {
-                console.error("Storage pools fetch failure", err);
+                console.error("Storage fetch failure", err);
             }
         },
 
@@ -3097,6 +3323,43 @@ document.addEventListener('alpine:init', () => {
                 if (res.ok) this.activityLogs = await res.json();
             } catch (err) {
                 console.error("Logs fetch failure", err);
+            }
+        },
+
+        async fetchImages() {
+            try {
+                const res = await fetch(`${API_BASE}/images`, { headers: API_HEADERS });
+                if (res.ok) this.images = await res.json();
+            } catch (err) {
+                console.error("Images fetch failure", err);
+            }
+        },
+
+        async uploadImage(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            this.showToast("İmaj yükleniyor, lütfen bekleyin...", "info");
+            const formData = new FormData();
+            formData.append("file", file);
+
+            try {
+                const res = await fetch(`${API_BASE}/images/upload`, {
+                    method: 'POST',
+                    headers: { 'X-API-Key': API_HEADERS['X-API-Key'] },
+                    body: formData
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    this.showToast(data.message, "success");
+                    await this.fetchImages();
+                } else {
+                    throw new Error(data.detail);
+                }
+            } catch (err) {
+                this.showToast(err.message, "error");
+            } finally {
+                event.target.value = ''; // Reset input
             }
         },
 
@@ -3723,6 +3986,7 @@ document.addEventListener('alpine:init', () => {
         }
     }));
 });
+
 _ANKAVM_EOF_
 
 # Write frontend/index.html
@@ -3759,46 +4023,57 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
 <body class="bg-[#0b0f19] min-h-screen flex flex-col text-slate-300" x-data="vmPanel">
 
     <!-- Glassmorphic Full Screen License Key Entry Overlay -->
-    <div x-show="!licenseStatus.is_licensed" class="fixed inset-0 bg-[#070a13]/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
-        <div class="bg-[#111827]/80 border border-red-500/30 rounded-2xl p-8 max-w-md w-full shadow-2xl space-y-6 text-center">
-            <div class="w-16 h-16 rounded-full bg-red-500/10 border border-red-500/20 mx-auto flex items-center justify-center text-red-500 animate-pulse">
-                <i class="fa-solid fa-key text-2xl"></i>
+    <div x-show="!licenseStatus.is_licensed" class="fixed inset-0 bg-[#070a13]/95 backdrop-blur-md z-50 flex items-center justify-center p-4">
+        <div class="bg-[#111827] border border-red-500/30 rounded-2xl p-8 max-w-lg w-full shadow-2xl space-y-5 text-center">
+            <!-- Icon -->
+            <div class="w-16 h-16 rounded-full bg-red-500/10 border border-red-500/20 mx-auto flex items-center justify-center text-red-400 animate-pulse">
+                <i class="fa-solid fa-shield-halved text-2xl"></i>
             </div>
-            <div class="space-y-2">
+
+            <!-- Title -->
+            <div class="space-y-1">
                 <h2 class="text-xl font-bold text-white tracking-wide">Lisans Doğrulaması Gerekli</h2>
-                <p class="text-xs text-slate-400">AnkaVM SaaS Virtualization Platformu'nu kullanmak için geçerli bir lisans anahtarı giriniz.</p>
+                <p class="text-xs text-slate-400" x-text="licenseStatus.detail || 'Lisans anahtarınızı giriniz.'"></p>
             </div>
-            
-            <div class="bg-slate-900/60 p-4 rounded-xl border border-slate-800 text-xs font-mono space-y-2 text-left">
-                <div class="flex justify-between">
-                    <span class="text-slate-500">Cihaz Hardware ID:</span>
-                    <span x-text="licenseStatus.hardware_id" class="text-brand-500 font-bold select-all"></span>
+
+            <!-- Info Box -->
+            <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800 text-xs font-mono space-y-2 text-left">
+                <div class="flex justify-between items-center">
+                    <span class="text-slate-500">Cihaz HWID:</span>
+                    <span x-text="licenseStatus.hardware_id || 'Alınıyor...'" class="text-brand-400 font-bold select-all cursor-pointer" title="Kopyalamak için tıklayın"
+                          @click="navigator.clipboard.writeText(licenseStatus.hardware_id)"></span>
                 </div>
-                <div class="flex justify-between">
-                    <span class="text-slate-500">Düğüm IP'si:</span>
-                    <span x-text="licenseStatus.allowed_ip || 'Doğrulanıyor...'" class="text-slate-300"></span>
+                <div class="flex justify-between items-center" x-show="licenseStatus.expires_at">
+                    <span class="text-slate-500">Lisans Bitiş:</span>
+                    <span x-text="licenseStatus.expires_at" class="text-yellow-400 font-bold"></span>
                 </div>
             </div>
 
-            <form @submit.prevent="updateLicense()" class="space-y-4 text-left">
+            <!-- License Key Form -->
+            <form @submit.prevent="updateLicense()" class="space-y-3 text-left">
                 <div class="space-y-1.5">
-                    <label class="text-[10px] uppercase font-bold text-slate-400 font-mono">Lisans Anahtarı</label>
-                    <input type="text" x-model="licenseKeyInput" required placeholder="ANKAVM-PRO-XXXX-XXXX" 
-                           class="w-full px-4 py-3 bg-slate-950/80 border border-slate-800 focus:border-brand-500 focus:outline-none rounded-xl text-white font-mono text-xs text-center tracking-widest placeholder-slate-700"/>
+                    <label class="text-[10px] uppercase font-bold text-slate-400 font-mono tracking-wider">Lisans Anahtarı</label>
+                    <input id="license-key-input" type="text" x-model="licenseKeyInput" required
+                           placeholder="ANKAVM-XXXX-XXXX-XXXX-YYYYMMDD-XXXXXXXX"
+                           class="w-full px-4 py-3 bg-slate-950 border border-slate-700 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500/30 rounded-xl text-white font-mono text-[11px] text-center tracking-widest placeholder-slate-700 transition-all"/>
                 </div>
-                <button type="submit" class="w-full bg-brand-500 hover:bg-brand-600 transition duration-200 text-white text-xs font-bold py-3 rounded-xl shadow-lg shadow-brand-500/20 flex items-center justify-center space-x-2">
+                <button id="license-activate-btn" type="submit"
+                        class="w-full bg-brand-500 hover:bg-brand-600 active:scale-[.98] transition-all duration-150 text-white text-xs font-bold py-3 rounded-xl shadow-lg shadow-brand-500/20 flex items-center justify-center space-x-2">
                     <i class="fa-solid fa-circle-check"></i>
                     <span>Lisansı Etkinleştir</span>
                 </button>
             </form>
-            <div class="text-[10px] text-slate-500 leading-normal">
-                Geliştirici Trial Lisansı: <span class="text-slate-400 font-mono select-all font-bold">ANKAVM-TRIAL-KEY-2026</span>
-            </div>
+
+            <!-- Footer note -->
+            <p class="text-[10px] text-slate-600 leading-relaxed">
+                Lisans anahtarınız sistem yöneticiniz tarafından sağlanmalıdır.<br>
+                HWID değerini kopyalayıp yöneticinize iletebilirsiniz.
+            </p>
         </div>
     </div>
 
     <!-- Page Body Wrapper -->
-    <div class="flex-1 flex min-h-0">
+    <div class="flex-1 flex min-h-0" x-show="licenseStatus.is_licensed" style="display: none;">
         
         <!-- Left Sidebar Navigation -->
         <aside class="w-60 bg-[#111827] border-r border-slate-800 flex flex-col justify-between shrink-0 sticky top-0 h-screen z-30">
@@ -3830,6 +4105,22 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
                     <i class="fa-solid fa-network-wired text-sm" :class="activeTab === 'networks' ? 'text-brand-500' : ''"></i>
                     <span>Ağ Köprüleri</span>
                 </button>
+                <button @click="setTab('vcenter')" :class="activeTab === 'vcenter' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-server text-sm" :class="activeTab === 'vcenter' ? 'text-brand-500' : ''"></i>
+                    <span>VCenter Entegrasyonu</span>
+                </button>
+                <button @click="setTab('modules')" :class="activeTab === 'modules' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-puzzle-piece text-sm" :class="activeTab === 'modules' ? 'text-brand-500' : ''"></i>
+                    <span>Modüller</span>
+                </button>
+                <button @click="setTab('images')" :class="activeTab === 'images' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-compact-disc text-sm" :class="activeTab === 'images' ? 'text-brand-500' : ''"></i>
+                    <span>İmajlar</span>
+                </button>
+                <button @click="setTab('wisecp')" :class="activeTab === 'wisecp' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-plug text-sm" :class="activeTab === 'wisecp' ? 'text-brand-500' : ''"></i>
+                    <span>WiseCP Entegrasyonu</span>
+                </button>
                 <button @click="setTab('storage')" :class="activeTab === 'storage' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
                     <i class="fa-solid fa-database text-sm" :class="activeTab === 'storage' ? 'text-brand-500' : ''"></i>
                     <span>Disk Depolama (Storage)</span>
@@ -3837,10 +4128,6 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
                 <button @click="setTab('license')" :class="activeTab === 'license' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
                     <i class="fa-solid fa-key text-sm" :class="activeTab === 'license' ? 'text-brand-500' : ''"></i>
                     <span>Lisans Denetimi</span>
-                </button>
-                <button @click="setTab('settings')" :class="activeTab === 'settings' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
-                    <i class="fa-solid fa-sliders text-sm" :class="activeTab === 'settings' ? 'text-brand-500' : ''"></i>
-                    <span>Entegrasyon & WiseCP</span>
                 </button>
             </nav>
 
@@ -3868,7 +4155,10 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
                         <span x-show="activeTab === 'networks'">SANAL AĞ KÖPRÜLERİ</span>
                         <span x-show="activeTab === 'storage'">DEPOLAMA HAVUZLARI</span>
                         <span x-show="activeTab === 'license'">LİSANS YÖNETİCİSİ</span>
-                        <span x-show="activeTab === 'settings'">SİSTEM ENTEGRASYONLARI & WiseCP</span>
+                        <span x-show="activeTab === 'wisecp'">WISECP ENTEGRASYONU</span>
+                        <span x-show="activeTab === 'vcenter'">VCENTER ENTEGRASYONU</span>
+                        <span x-show="activeTab === 'images'">İMAJ YÖNETİMİ</span>
+                        <span x-show="activeTab === 'modules'">MODÜL MARKET</span>
                     </h2>
                     <div class="h-4 w-[1px] bg-slate-800"></div>
                     <span class="text-[11px] font-mono text-slate-400" x-text="`Aktif VM: ${hostStats.vms_running} / Toplam: ${hostStats.vms_total}`"></span>
@@ -4280,8 +4570,169 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
                         </div>
                     </div>
 
-                    <!-- 6. SETTINGS & WiseCP TAB -->
-                    <div x-show="activeTab === 'settings'" x-cloak class="space-y-6">
+                    <!-- VCENTER TAB -->
+                    <div x-show="activeTab === 'vcenter'" x-cloak class="space-y-6">
+                        <div class="corp-card rounded-lg p-5 space-y-4 max-w-2xl">
+                            <h3 class="text-xs font-bold uppercase text-white flex items-center space-x-1.5">
+                                <i class="fa-solid fa-server text-brand-500"></i>
+                                <span>VCenter Bağlantı Ayarları</span>
+                            </h3>
+                            <p class="text-xs text-slate-400">AnkaVM'i mevcut VCenter altyapınızla entegre ederek ISO ve imajları senkronize edebilirsiniz.</p>
+                            <form @submit.prevent="saveVcenterConfig()" class="space-y-3 font-mono text-xs">
+                                <div>
+                                    <label class="text-[9px] text-slate-500 uppercase">VCenter Host / IP:</label>
+                                    <input type="text" x-model="vcenterConfig.host" required placeholder="vcenter.sirket.local" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
+                                </div>
+                                <div>
+                                    <label class="text-[9px] text-slate-500 uppercase">Kullanıcı Adı:</label>
+                                    <input type="text" x-model="vcenterConfig.username" required placeholder="administrator@vsphere.local" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
+                                </div>
+                                <div>
+                                    <label class="text-[9px] text-slate-500 uppercase">Şifre:</label>
+                                    <input type="password" x-model="vcenterConfig.password" required placeholder="********" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
+                                </div>
+                                <button type="submit" class="btn-primary px-4 py-2 rounded text-xs font-bold">
+                                    <span x-text="vcenterConfig.is_active ? 'Bağlantı Aktif (Yenile)' : 'Bağlantıyı Test Et ve Kaydet'"></span>
+                                </button>
+                            </form>
+                        </div>
+
+                        <!-- VCenter Discovery Panel -->
+                        <div x-show="vcenterConfig.is_active" class="bg-slate-900/50 p-0 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm overflow-hidden mt-6">
+                            <div class="p-5 border-b border-slate-800 flex justify-between items-center bg-[#111827]">
+                                <h3 class="text-sm font-bold text-white flex items-center space-x-2">
+                                    <i class="fa-solid fa-radar text-brand-500"></i>
+                                    <span>VCenter Keşfedilen Kaynaklar (Discovery)</span>
+                                </h3>
+                                <button @click="fetchVcenterDiscovery()" class="text-xs text-brand-500 hover:text-white transition"><i class="fa-solid fa-rotate-right mr-1"></i>Yenile</button>
+                            </div>
+                            <div class="overflow-x-auto max-h-96 overflow-y-auto">
+                                <table class="w-full text-left border-collapse">
+                                    <thead>
+                                        <tr class="bg-[#111827] text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                                            <th class="p-4 border-b border-slate-800">Kaynak Adı</th>
+                                            <th class="p-4 border-b border-slate-800">Tür</th>
+                                            <th class="p-4 border-b border-slate-800 text-center">Kapasite / Bilgi</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="text-xs font-medium text-slate-300 divide-y divide-slate-800/50">
+                                        <template x-for="item in vcenterDiscovery" :key="item.name + item.type">
+                                            <tr class="hover:bg-slate-800/30 transition">
+                                                <td class="p-4 flex items-center space-x-3">
+                                                    <i class="fa-solid" :class="item.type === 'Datastore' ? 'fa-database text-emerald-500' : 'fa-network-wired text-brand-500'"></i>
+                                                    <span x-text="item.name"></span>
+                                                </td>
+                                                <td class="p-4 text-slate-400" x-text="item.type"></td>
+                                                <td class="p-4 text-center">
+                                                    <span x-show="item.type === 'Datastore'" class="text-[10px] text-slate-400" x-text="`Kapasite: ${item.capacityGB}GB / Boş: ${item.freeGB}GB`"></span>
+                                                    <span x-show="item.type === 'Network'" class="text-[10px] text-slate-400">PortGroup Ready</span>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                        <tr x-show="vcenterDiscovery.length === 0">
+                                            <td colspan="3" class="p-4 text-center text-slate-500">Henüz kaynak keşfedilmedi. Bağlantıyı test edin.</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- IMAGES TAB -->
+                    <div x-show="activeTab === 'images'" x-cloak class="space-y-6">
+                        <div class="bg-slate-900/50 p-6 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm relative overflow-hidden group">
+                            <div class="absolute inset-0 bg-gradient-to-br from-brand-500/5 to-transparent opacity-0 group-hover:opacity-100 transition duration-500"></div>
+                            <h3 class="text-sm font-bold text-white mb-4 relative flex items-center space-x-2">
+                                <i class="fa-solid fa-cloud-arrow-up text-brand-500"></i>
+                                <span>İmaj Yükle (VCenter Content Library)</span>
+                            </h3>
+                            <div class="flex items-center justify-center w-full">
+                                <label for="dropzone-file" class="flex flex-col items-center justify-center w-full h-40 border-2 border-slate-700 border-dashed rounded-xl cursor-pointer bg-slate-950/50 hover:bg-slate-800/50 transition">
+                                    <div class="flex flex-col items-center justify-center pt-5 pb-6">
+                                        <i class="fa-solid fa-upload text-3xl text-slate-500 mb-3"></i>
+                                        <p class="mb-2 text-sm text-slate-400"><span class="font-semibold text-brand-500">Tıklayın</span> veya sürükleyip bırakın</p>
+                                        <p class="text-xs text-slate-500">ISO veya VM Template (.ova, .vmdk)</p>
+                                    </div>
+                                    <input id="dropzone-file" type="file" class="hidden" @change="uploadImage" accept=".iso,.img,.qcow2,.ova,.vmdk" />
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="bg-slate-900/50 p-0 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm overflow-hidden">
+                            <div class="p-5 border-b border-slate-800 flex justify-between items-center bg-[#111827]">
+                                <h3 class="text-sm font-bold text-white flex items-center space-x-2">
+                                    <i class="fa-solid fa-list text-brand-500"></i>
+                                    <span>Mevcut İmajlar</span>
+                                </h3>
+                            </div>
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-left border-collapse">
+                                    <thead>
+                                        <tr class="bg-[#111827] text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                                            <th class="p-4 border-b border-slate-800">İmaj Adı</th>
+                                            <th class="p-4 border-b border-slate-800">Tür</th>
+                                            <th class="p-4 border-b border-slate-800 text-center">Durum</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="text-xs font-medium text-slate-300 divide-y divide-slate-800/50">
+                                        <template x-for="img in images" :key="img.id">
+                                            <tr class="hover:bg-slate-800/30 transition">
+                                                <td class="p-4 flex items-center space-x-3"><i class="fa-solid fa-compact-disc text-slate-500 text-lg"></i><span x-text="img.name"></span></td>
+                                                <td class="p-4 text-slate-400" x-text="img.is_template ? 'Template' : 'ISO Image'"></td>
+                                                <td class="p-4 text-center">
+                                                    <span x-show="img.status === 'ready'" class="px-2 py-1 rounded bg-green-500/10 text-green-500 border border-green-500/20 text-[10px]">Ready</span>
+                                                    <span x-show="img.status === 'uploading'" class="px-2 py-1 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20 text-[10px] animate-pulse">Uploading</span>
+                                                    <span x-show="img.status === 'failed'" class="px-2 py-1 rounded bg-red-500/10 text-red-500 border border-red-500/20 text-[10px]">Failed</span>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                        <tr x-show="images.length === 0">
+                                            <td colspan="3" class="p-4 text-center text-slate-500">Hiç imaj bulunamadı.</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- MODULES TAB -->
+                    <div x-show="activeTab === 'modules'" x-cloak class="space-y-6">
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            <!-- Web Console Module -->
+                            <div class="bg-slate-900/50 p-6 rounded-2xl border border-brand-500/30 shadow-[0_0_15px_rgba(59,130,246,0.1)] backdrop-blur-sm relative overflow-hidden group">
+                                <div class="absolute inset-0 bg-gradient-to-br from-brand-500/10 to-transparent opacity-50"></div>
+                                <div class="relative flex flex-col h-full">
+                                    <div class="flex justify-between items-start mb-4">
+                                        <div class="w-12 h-12 rounded-xl bg-brand-500/20 border border-brand-500/30 flex items-center justify-center text-brand-500 text-xl shadow-lg">
+                                            <i class="fa-solid fa-terminal"></i>
+                                        </div>
+                                        <span class="px-2.5 py-1 text-[10px] font-bold uppercase rounded-full bg-green-500/20 text-green-400 border border-green-500/30">Aktif</span>
+                                    </div>
+                                    <h3 class="text-lg font-bold text-white mb-2">Gelişmiş Web Console</h3>
+                                    <p class="text-xs text-slate-400 mb-6 flex-1">VCenter MKS protokolünü WebSockets üzerinden güvenli bir şekilde aktararak tarayıcı içi yüksek performanslı konsol deneyimi sunar.</p>
+                                    <button class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700 transition">Ayarları Yönet</button>
+                                </div>
+                            </div>
+                            
+                            <!-- Auto-Password Module -->
+                            <div class="bg-slate-900/50 p-6 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm relative overflow-hidden opacity-70 hover:opacity-100 transition">
+                                <div class="relative flex flex-col h-full">
+                                    <div class="flex justify-between items-start mb-4">
+                                        <div class="w-12 h-12 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 text-xl">
+                                            <i class="fa-solid fa-key"></i>
+                                        </div>
+                                        <span class="px-2.5 py-1 text-[10px] font-bold uppercase rounded-full bg-slate-800 text-slate-500 border border-slate-700">Lisans Yok</span>
+                                    </div>
+                                    <h3 class="text-lg font-bold text-white mb-2">Otomatik Şifre Yönetimi</h3>
+                                    <p class="text-xs text-slate-400 mb-6 flex-1">VM kurulumu sonrası işletim sistemi şifrelerini otomatik sıfırlama ve WiseCP üzerinden gösterme modülü.</p>
+                                    <button class="w-full py-2.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-bold rounded-lg transition shadow-lg shadow-brand-500/20">WiseCP'den Satın Al</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- WISECP TAB -->
+                    <div x-show="activeTab === 'wisecp'" x-cloak class="space-y-6">
                         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                             <!-- Left: Setup and code -->
                             <div class="lg:col-span-2 corp-card rounded-lg p-5 space-y-4">
@@ -4301,15 +4752,46 @@ class AnkaVM {
     private $apiUrl = "http://your-server-ip:8086";
     private $apiKey = "ankavm-secure-dev-token-2026";
     
-    public function createServer($vmName, $cpu, $ram, $disk, $template, $rootPassword) {
-        return $this->call('/api/wisecp/deploy', 'POST', [
-            'order_id' => 'ws-order-'.rand(1000,9999),
-            'product_id' => 'saas-prod',
-            'name' => $vmName, 'cpu' => $cpu, 'ram_mb' => $ram, 'disk_gb' => $disk,
-            'disk_pool' => 'default-dir',
-            'os_template' => $template, 'root_password' => $rootPassword,
-            'callback_url' => 'http://yoursite.com/callback'
+    private function call($endpoint, $method, $data) {
+        $ch = curl_init($this->apiUrl . $endpoint);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json',
+            'X-API-Key: ' . $this->apiKey
         ]);
+        return json_decode(curl_exec($ch), true);
+    }
+    
+    public function createServer($params) {
+        return $this->call('/api/wisecp/deploy', 'POST', [
+            'order_id' => $params['order_id'],
+            'product_id' => $params['product_id'],
+            'name' => $params['hostname'], 
+            'cpu' => $params['config']['cpu'], 
+            'ram_mb' => $params['config']['ram'], 
+            'disk_gb' => $params['config']['disk'],
+            'disk_pool' => 'default-dir',
+            'os_template' => $params['config']['os'],
+            'callback_url' => 'http://yoursite.com/wisecp_callback.php'
+        ]);
+    }
+
+    public function suspendServer($params) {
+        return $this->call('/api/wisecp/suspend', 'POST', ['order_id' => $params['order_id']]);
+    }
+
+    public function unsuspendServer($params) {
+        return $this->call('/api/wisecp/unsuspend', 'POST', ['order_id' => $params['order_id']]);
+    }
+
+    public function terminateServer($params) {
+        return $this->call('/api/wisecp/terminate', 'POST', ['order_id' => $params['order_id']]);
+    }
+
+    public function rebootServer($params) {
+        return $this->call('/api/wisecp/reboot', 'POST', ['order_id' => $params['order_id']]);
     }
 }</pre>
                             </div>
@@ -4523,6 +5005,7 @@ class AnkaVM {
 
 </body>
 </html>
+
 _ANKAVM_EOF_
 
 # Write nginx/ankavm.conf
