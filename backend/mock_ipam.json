@@ -1,0 +1,1785 @@
+{
+    "pools": {
+        "1": {
+            "id": "1",
+            "name": "default-pool",
+            "cidr": "192.168.122.0/24",
+            "gateway": "192.168.122.1",
+            "dns_primary": "8.8.8.8",
+            "dns_secondary": "1.1.1.1"
+        }
+    },
+    "addresses": {
+        "192.168.122.2": {
+            "id": 1,
+            "pool_id": "1",
+            "ip_address": "192.168.122.2",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.3": {
+            "id": 2,
+            "pool_id": "1",
+            "ip_address": "192.168.122.3",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.4": {
+            "id": 3,
+            "pool_id": "1",
+            "ip_address": "192.168.122.4",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.5": {
+            "id": 4,
+            "pool_id": "1",
+            "ip_address": "192.168.122.5",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.6": {
+            "id": 5,
+            "pool_id": "1",
+            "ip_address": "192.168.122.6",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.7": {
+            "id": 6,
+            "pool_id": "1",
+            "ip_address": "192.168.122.7",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.8": {
+            "id": 7,
+            "pool_id": "1",
+            "ip_address": "192.168.122.8",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.9": {
+            "id": 8,
+            "pool_id": "1",
+            "ip_address": "192.168.122.9",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.10": {
+            "id": 9,
+            "pool_id": "1",
+            "ip_address": "192.168.122.10",
+            "status": "ALLOCATED",
+            "allocated_to_vm": "web-prod-01"
+        },
+        "192.168.122.11": {
+            "id": 10,
+            "pool_id": "1",
+            "ip_address": "192.168.122.11",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.12": {
+            "id": 11,
+            "pool_id": "1",
+            "ip_address": "192.168.122.12",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.13": {
+            "id": 12,
+            "pool_id": "1",
+            "ip_address": "192.168.122.13",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.14": {
+            "id": 13,
+            "pool_id": "1",
+            "ip_address": "192.168.122.14",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.15": {
+            "id": 14,
+            "pool_id": "1",
+            "ip_address": "192.168.122.15",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.16": {
+            "id": 15,
+            "pool_id": "1",
+            "ip_address": "192.168.122.16",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.17": {
+            "id": 16,
+            "pool_id": "1",
+            "ip_address": "192.168.122.17",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.18": {
+            "id": 17,
+            "pool_id": "1",
+            "ip_address": "192.168.122.18",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.19": {
+            "id": 18,
+            "pool_id": "1",
+            "ip_address": "192.168.122.19",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.20": {
+            "id": 19,
+            "pool_id": "1",
+            "ip_address": "192.168.122.20",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.21": {
+            "id": 20,
+            "pool_id": "1",
+            "ip_address": "192.168.122.21",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.22": {
+            "id": 21,
+            "pool_id": "1",
+            "ip_address": "192.168.122.22",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.23": {
+            "id": 22,
+            "pool_id": "1",
+            "ip_address": "192.168.122.23",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.24": {
+            "id": 23,
+            "pool_id": "1",
+            "ip_address": "192.168.122.24",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.25": {
+            "id": 24,
+            "pool_id": "1",
+            "ip_address": "192.168.122.25",
+            "status": "ALLOCATED",
+            "allocated_to_vm": "db-replica-02"
+        },
+        "192.168.122.26": {
+            "id": 25,
+            "pool_id": "1",
+            "ip_address": "192.168.122.26",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.27": {
+            "id": 26,
+            "pool_id": "1",
+            "ip_address": "192.168.122.27",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.28": {
+            "id": 27,
+            "pool_id": "1",
+            "ip_address": "192.168.122.28",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.29": {
+            "id": 28,
+            "pool_id": "1",
+            "ip_address": "192.168.122.29",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.30": {
+            "id": 29,
+            "pool_id": "1",
+            "ip_address": "192.168.122.30",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.31": {
+            "id": 30,
+            "pool_id": "1",
+            "ip_address": "192.168.122.31",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.32": {
+            "id": 31,
+            "pool_id": "1",
+            "ip_address": "192.168.122.32",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.33": {
+            "id": 32,
+            "pool_id": "1",
+            "ip_address": "192.168.122.33",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.34": {
+            "id": 33,
+            "pool_id": "1",
+            "ip_address": "192.168.122.34",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.35": {
+            "id": 34,
+            "pool_id": "1",
+            "ip_address": "192.168.122.35",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.36": {
+            "id": 35,
+            "pool_id": "1",
+            "ip_address": "192.168.122.36",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.37": {
+            "id": 36,
+            "pool_id": "1",
+            "ip_address": "192.168.122.37",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.38": {
+            "id": 37,
+            "pool_id": "1",
+            "ip_address": "192.168.122.38",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.39": {
+            "id": 38,
+            "pool_id": "1",
+            "ip_address": "192.168.122.39",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.40": {
+            "id": 39,
+            "pool_id": "1",
+            "ip_address": "192.168.122.40",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.41": {
+            "id": 40,
+            "pool_id": "1",
+            "ip_address": "192.168.122.41",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.42": {
+            "id": 41,
+            "pool_id": "1",
+            "ip_address": "192.168.122.42",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.43": {
+            "id": 42,
+            "pool_id": "1",
+            "ip_address": "192.168.122.43",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.44": {
+            "id": 43,
+            "pool_id": "1",
+            "ip_address": "192.168.122.44",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.45": {
+            "id": 44,
+            "pool_id": "1",
+            "ip_address": "192.168.122.45",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.46": {
+            "id": 45,
+            "pool_id": "1",
+            "ip_address": "192.168.122.46",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.47": {
+            "id": 46,
+            "pool_id": "1",
+            "ip_address": "192.168.122.47",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.48": {
+            "id": 47,
+            "pool_id": "1",
+            "ip_address": "192.168.122.48",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.49": {
+            "id": 48,
+            "pool_id": "1",
+            "ip_address": "192.168.122.49",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.50": {
+            "id": 49,
+            "pool_id": "1",
+            "ip_address": "192.168.122.50",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.51": {
+            "id": 50,
+            "pool_id": "1",
+            "ip_address": "192.168.122.51",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.52": {
+            "id": 51,
+            "pool_id": "1",
+            "ip_address": "192.168.122.52",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.53": {
+            "id": 52,
+            "pool_id": "1",
+            "ip_address": "192.168.122.53",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.54": {
+            "id": 53,
+            "pool_id": "1",
+            "ip_address": "192.168.122.54",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.55": {
+            "id": 54,
+            "pool_id": "1",
+            "ip_address": "192.168.122.55",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.56": {
+            "id": 55,
+            "pool_id": "1",
+            "ip_address": "192.168.122.56",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.57": {
+            "id": 56,
+            "pool_id": "1",
+            "ip_address": "192.168.122.57",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.58": {
+            "id": 57,
+            "pool_id": "1",
+            "ip_address": "192.168.122.58",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.59": {
+            "id": 58,
+            "pool_id": "1",
+            "ip_address": "192.168.122.59",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.60": {
+            "id": 59,
+            "pool_id": "1",
+            "ip_address": "192.168.122.60",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.61": {
+            "id": 60,
+            "pool_id": "1",
+            "ip_address": "192.168.122.61",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.62": {
+            "id": 61,
+            "pool_id": "1",
+            "ip_address": "192.168.122.62",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.63": {
+            "id": 62,
+            "pool_id": "1",
+            "ip_address": "192.168.122.63",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.64": {
+            "id": 63,
+            "pool_id": "1",
+            "ip_address": "192.168.122.64",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.65": {
+            "id": 64,
+            "pool_id": "1",
+            "ip_address": "192.168.122.65",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.66": {
+            "id": 65,
+            "pool_id": "1",
+            "ip_address": "192.168.122.66",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.67": {
+            "id": 66,
+            "pool_id": "1",
+            "ip_address": "192.168.122.67",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.68": {
+            "id": 67,
+            "pool_id": "1",
+            "ip_address": "192.168.122.68",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.69": {
+            "id": 68,
+            "pool_id": "1",
+            "ip_address": "192.168.122.69",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.70": {
+            "id": 69,
+            "pool_id": "1",
+            "ip_address": "192.168.122.70",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.71": {
+            "id": 70,
+            "pool_id": "1",
+            "ip_address": "192.168.122.71",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.72": {
+            "id": 71,
+            "pool_id": "1",
+            "ip_address": "192.168.122.72",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.73": {
+            "id": 72,
+            "pool_id": "1",
+            "ip_address": "192.168.122.73",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.74": {
+            "id": 73,
+            "pool_id": "1",
+            "ip_address": "192.168.122.74",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.75": {
+            "id": 74,
+            "pool_id": "1",
+            "ip_address": "192.168.122.75",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.76": {
+            "id": 75,
+            "pool_id": "1",
+            "ip_address": "192.168.122.76",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.77": {
+            "id": 76,
+            "pool_id": "1",
+            "ip_address": "192.168.122.77",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.78": {
+            "id": 77,
+            "pool_id": "1",
+            "ip_address": "192.168.122.78",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.79": {
+            "id": 78,
+            "pool_id": "1",
+            "ip_address": "192.168.122.79",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.80": {
+            "id": 79,
+            "pool_id": "1",
+            "ip_address": "192.168.122.80",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.81": {
+            "id": 80,
+            "pool_id": "1",
+            "ip_address": "192.168.122.81",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.82": {
+            "id": 81,
+            "pool_id": "1",
+            "ip_address": "192.168.122.82",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.83": {
+            "id": 82,
+            "pool_id": "1",
+            "ip_address": "192.168.122.83",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.84": {
+            "id": 83,
+            "pool_id": "1",
+            "ip_address": "192.168.122.84",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.85": {
+            "id": 84,
+            "pool_id": "1",
+            "ip_address": "192.168.122.85",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.86": {
+            "id": 85,
+            "pool_id": "1",
+            "ip_address": "192.168.122.86",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.87": {
+            "id": 86,
+            "pool_id": "1",
+            "ip_address": "192.168.122.87",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.88": {
+            "id": 87,
+            "pool_id": "1",
+            "ip_address": "192.168.122.88",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.89": {
+            "id": 88,
+            "pool_id": "1",
+            "ip_address": "192.168.122.89",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.90": {
+            "id": 89,
+            "pool_id": "1",
+            "ip_address": "192.168.122.90",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.91": {
+            "id": 90,
+            "pool_id": "1",
+            "ip_address": "192.168.122.91",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.92": {
+            "id": 91,
+            "pool_id": "1",
+            "ip_address": "192.168.122.92",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.93": {
+            "id": 92,
+            "pool_id": "1",
+            "ip_address": "192.168.122.93",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.94": {
+            "id": 93,
+            "pool_id": "1",
+            "ip_address": "192.168.122.94",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.95": {
+            "id": 94,
+            "pool_id": "1",
+            "ip_address": "192.168.122.95",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.96": {
+            "id": 95,
+            "pool_id": "1",
+            "ip_address": "192.168.122.96",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.97": {
+            "id": 96,
+            "pool_id": "1",
+            "ip_address": "192.168.122.97",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.98": {
+            "id": 97,
+            "pool_id": "1",
+            "ip_address": "192.168.122.98",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.99": {
+            "id": 98,
+            "pool_id": "1",
+            "ip_address": "192.168.122.99",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.100": {
+            "id": 99,
+            "pool_id": "1",
+            "ip_address": "192.168.122.100",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.101": {
+            "id": 100,
+            "pool_id": "1",
+            "ip_address": "192.168.122.101",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.102": {
+            "id": 101,
+            "pool_id": "1",
+            "ip_address": "192.168.122.102",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.103": {
+            "id": 102,
+            "pool_id": "1",
+            "ip_address": "192.168.122.103",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.104": {
+            "id": 103,
+            "pool_id": "1",
+            "ip_address": "192.168.122.104",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.105": {
+            "id": 104,
+            "pool_id": "1",
+            "ip_address": "192.168.122.105",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.106": {
+            "id": 105,
+            "pool_id": "1",
+            "ip_address": "192.168.122.106",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.107": {
+            "id": 106,
+            "pool_id": "1",
+            "ip_address": "192.168.122.107",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.108": {
+            "id": 107,
+            "pool_id": "1",
+            "ip_address": "192.168.122.108",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.109": {
+            "id": 108,
+            "pool_id": "1",
+            "ip_address": "192.168.122.109",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.110": {
+            "id": 109,
+            "pool_id": "1",
+            "ip_address": "192.168.122.110",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.111": {
+            "id": 110,
+            "pool_id": "1",
+            "ip_address": "192.168.122.111",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.112": {
+            "id": 111,
+            "pool_id": "1",
+            "ip_address": "192.168.122.112",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.113": {
+            "id": 112,
+            "pool_id": "1",
+            "ip_address": "192.168.122.113",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.114": {
+            "id": 113,
+            "pool_id": "1",
+            "ip_address": "192.168.122.114",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.115": {
+            "id": 114,
+            "pool_id": "1",
+            "ip_address": "192.168.122.115",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.116": {
+            "id": 115,
+            "pool_id": "1",
+            "ip_address": "192.168.122.116",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.117": {
+            "id": 116,
+            "pool_id": "1",
+            "ip_address": "192.168.122.117",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.118": {
+            "id": 117,
+            "pool_id": "1",
+            "ip_address": "192.168.122.118",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.119": {
+            "id": 118,
+            "pool_id": "1",
+            "ip_address": "192.168.122.119",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.120": {
+            "id": 119,
+            "pool_id": "1",
+            "ip_address": "192.168.122.120",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.121": {
+            "id": 120,
+            "pool_id": "1",
+            "ip_address": "192.168.122.121",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.122": {
+            "id": 121,
+            "pool_id": "1",
+            "ip_address": "192.168.122.122",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.123": {
+            "id": 122,
+            "pool_id": "1",
+            "ip_address": "192.168.122.123",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.124": {
+            "id": 123,
+            "pool_id": "1",
+            "ip_address": "192.168.122.124",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.125": {
+            "id": 124,
+            "pool_id": "1",
+            "ip_address": "192.168.122.125",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.126": {
+            "id": 125,
+            "pool_id": "1",
+            "ip_address": "192.168.122.126",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.127": {
+            "id": 126,
+            "pool_id": "1",
+            "ip_address": "192.168.122.127",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.128": {
+            "id": 127,
+            "pool_id": "1",
+            "ip_address": "192.168.122.128",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.129": {
+            "id": 128,
+            "pool_id": "1",
+            "ip_address": "192.168.122.129",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.130": {
+            "id": 129,
+            "pool_id": "1",
+            "ip_address": "192.168.122.130",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.131": {
+            "id": 130,
+            "pool_id": "1",
+            "ip_address": "192.168.122.131",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.132": {
+            "id": 131,
+            "pool_id": "1",
+            "ip_address": "192.168.122.132",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.133": {
+            "id": 132,
+            "pool_id": "1",
+            "ip_address": "192.168.122.133",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.134": {
+            "id": 133,
+            "pool_id": "1",
+            "ip_address": "192.168.122.134",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.135": {
+            "id": 134,
+            "pool_id": "1",
+            "ip_address": "192.168.122.135",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.136": {
+            "id": 135,
+            "pool_id": "1",
+            "ip_address": "192.168.122.136",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.137": {
+            "id": 136,
+            "pool_id": "1",
+            "ip_address": "192.168.122.137",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.138": {
+            "id": 137,
+            "pool_id": "1",
+            "ip_address": "192.168.122.138",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.139": {
+            "id": 138,
+            "pool_id": "1",
+            "ip_address": "192.168.122.139",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.140": {
+            "id": 139,
+            "pool_id": "1",
+            "ip_address": "192.168.122.140",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.141": {
+            "id": 140,
+            "pool_id": "1",
+            "ip_address": "192.168.122.141",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.142": {
+            "id": 141,
+            "pool_id": "1",
+            "ip_address": "192.168.122.142",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.143": {
+            "id": 142,
+            "pool_id": "1",
+            "ip_address": "192.168.122.143",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.144": {
+            "id": 143,
+            "pool_id": "1",
+            "ip_address": "192.168.122.144",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.145": {
+            "id": 144,
+            "pool_id": "1",
+            "ip_address": "192.168.122.145",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.146": {
+            "id": 145,
+            "pool_id": "1",
+            "ip_address": "192.168.122.146",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.147": {
+            "id": 146,
+            "pool_id": "1",
+            "ip_address": "192.168.122.147",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.148": {
+            "id": 147,
+            "pool_id": "1",
+            "ip_address": "192.168.122.148",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.149": {
+            "id": 148,
+            "pool_id": "1",
+            "ip_address": "192.168.122.149",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.150": {
+            "id": 149,
+            "pool_id": "1",
+            "ip_address": "192.168.122.150",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.151": {
+            "id": 150,
+            "pool_id": "1",
+            "ip_address": "192.168.122.151",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.152": {
+            "id": 151,
+            "pool_id": "1",
+            "ip_address": "192.168.122.152",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.153": {
+            "id": 152,
+            "pool_id": "1",
+            "ip_address": "192.168.122.153",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.154": {
+            "id": 153,
+            "pool_id": "1",
+            "ip_address": "192.168.122.154",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.155": {
+            "id": 154,
+            "pool_id": "1",
+            "ip_address": "192.168.122.155",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.156": {
+            "id": 155,
+            "pool_id": "1",
+            "ip_address": "192.168.122.156",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.157": {
+            "id": 156,
+            "pool_id": "1",
+            "ip_address": "192.168.122.157",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.158": {
+            "id": 157,
+            "pool_id": "1",
+            "ip_address": "192.168.122.158",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.159": {
+            "id": 158,
+            "pool_id": "1",
+            "ip_address": "192.168.122.159",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.160": {
+            "id": 159,
+            "pool_id": "1",
+            "ip_address": "192.168.122.160",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.161": {
+            "id": 160,
+            "pool_id": "1",
+            "ip_address": "192.168.122.161",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.162": {
+            "id": 161,
+            "pool_id": "1",
+            "ip_address": "192.168.122.162",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.163": {
+            "id": 162,
+            "pool_id": "1",
+            "ip_address": "192.168.122.163",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.164": {
+            "id": 163,
+            "pool_id": "1",
+            "ip_address": "192.168.122.164",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.165": {
+            "id": 164,
+            "pool_id": "1",
+            "ip_address": "192.168.122.165",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.166": {
+            "id": 165,
+            "pool_id": "1",
+            "ip_address": "192.168.122.166",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.167": {
+            "id": 166,
+            "pool_id": "1",
+            "ip_address": "192.168.122.167",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.168": {
+            "id": 167,
+            "pool_id": "1",
+            "ip_address": "192.168.122.168",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.169": {
+            "id": 168,
+            "pool_id": "1",
+            "ip_address": "192.168.122.169",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.170": {
+            "id": 169,
+            "pool_id": "1",
+            "ip_address": "192.168.122.170",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.171": {
+            "id": 170,
+            "pool_id": "1",
+            "ip_address": "192.168.122.171",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.172": {
+            "id": 171,
+            "pool_id": "1",
+            "ip_address": "192.168.122.172",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.173": {
+            "id": 172,
+            "pool_id": "1",
+            "ip_address": "192.168.122.173",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.174": {
+            "id": 173,
+            "pool_id": "1",
+            "ip_address": "192.168.122.174",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.175": {
+            "id": 174,
+            "pool_id": "1",
+            "ip_address": "192.168.122.175",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.176": {
+            "id": 175,
+            "pool_id": "1",
+            "ip_address": "192.168.122.176",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.177": {
+            "id": 176,
+            "pool_id": "1",
+            "ip_address": "192.168.122.177",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.178": {
+            "id": 177,
+            "pool_id": "1",
+            "ip_address": "192.168.122.178",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.179": {
+            "id": 178,
+            "pool_id": "1",
+            "ip_address": "192.168.122.179",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.180": {
+            "id": 179,
+            "pool_id": "1",
+            "ip_address": "192.168.122.180",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.181": {
+            "id": 180,
+            "pool_id": "1",
+            "ip_address": "192.168.122.181",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.182": {
+            "id": 181,
+            "pool_id": "1",
+            "ip_address": "192.168.122.182",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.183": {
+            "id": 182,
+            "pool_id": "1",
+            "ip_address": "192.168.122.183",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.184": {
+            "id": 183,
+            "pool_id": "1",
+            "ip_address": "192.168.122.184",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.185": {
+            "id": 184,
+            "pool_id": "1",
+            "ip_address": "192.168.122.185",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.186": {
+            "id": 185,
+            "pool_id": "1",
+            "ip_address": "192.168.122.186",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.187": {
+            "id": 186,
+            "pool_id": "1",
+            "ip_address": "192.168.122.187",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.188": {
+            "id": 187,
+            "pool_id": "1",
+            "ip_address": "192.168.122.188",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.189": {
+            "id": 188,
+            "pool_id": "1",
+            "ip_address": "192.168.122.189",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.190": {
+            "id": 189,
+            "pool_id": "1",
+            "ip_address": "192.168.122.190",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.191": {
+            "id": 190,
+            "pool_id": "1",
+            "ip_address": "192.168.122.191",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.192": {
+            "id": 191,
+            "pool_id": "1",
+            "ip_address": "192.168.122.192",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.193": {
+            "id": 192,
+            "pool_id": "1",
+            "ip_address": "192.168.122.193",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.194": {
+            "id": 193,
+            "pool_id": "1",
+            "ip_address": "192.168.122.194",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.195": {
+            "id": 194,
+            "pool_id": "1",
+            "ip_address": "192.168.122.195",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.196": {
+            "id": 195,
+            "pool_id": "1",
+            "ip_address": "192.168.122.196",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.197": {
+            "id": 196,
+            "pool_id": "1",
+            "ip_address": "192.168.122.197",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.198": {
+            "id": 197,
+            "pool_id": "1",
+            "ip_address": "192.168.122.198",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.199": {
+            "id": 198,
+            "pool_id": "1",
+            "ip_address": "192.168.122.199",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.200": {
+            "id": 199,
+            "pool_id": "1",
+            "ip_address": "192.168.122.200",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.201": {
+            "id": 200,
+            "pool_id": "1",
+            "ip_address": "192.168.122.201",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.202": {
+            "id": 201,
+            "pool_id": "1",
+            "ip_address": "192.168.122.202",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.203": {
+            "id": 202,
+            "pool_id": "1",
+            "ip_address": "192.168.122.203",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.204": {
+            "id": 203,
+            "pool_id": "1",
+            "ip_address": "192.168.122.204",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.205": {
+            "id": 204,
+            "pool_id": "1",
+            "ip_address": "192.168.122.205",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.206": {
+            "id": 205,
+            "pool_id": "1",
+            "ip_address": "192.168.122.206",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.207": {
+            "id": 206,
+            "pool_id": "1",
+            "ip_address": "192.168.122.207",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.208": {
+            "id": 207,
+            "pool_id": "1",
+            "ip_address": "192.168.122.208",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.209": {
+            "id": 208,
+            "pool_id": "1",
+            "ip_address": "192.168.122.209",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.210": {
+            "id": 209,
+            "pool_id": "1",
+            "ip_address": "192.168.122.210",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.211": {
+            "id": 210,
+            "pool_id": "1",
+            "ip_address": "192.168.122.211",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.212": {
+            "id": 211,
+            "pool_id": "1",
+            "ip_address": "192.168.122.212",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.213": {
+            "id": 212,
+            "pool_id": "1",
+            "ip_address": "192.168.122.213",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.214": {
+            "id": 213,
+            "pool_id": "1",
+            "ip_address": "192.168.122.214",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.215": {
+            "id": 214,
+            "pool_id": "1",
+            "ip_address": "192.168.122.215",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.216": {
+            "id": 215,
+            "pool_id": "1",
+            "ip_address": "192.168.122.216",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.217": {
+            "id": 216,
+            "pool_id": "1",
+            "ip_address": "192.168.122.217",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.218": {
+            "id": 217,
+            "pool_id": "1",
+            "ip_address": "192.168.122.218",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.219": {
+            "id": 218,
+            "pool_id": "1",
+            "ip_address": "192.168.122.219",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.220": {
+            "id": 219,
+            "pool_id": "1",
+            "ip_address": "192.168.122.220",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.221": {
+            "id": 220,
+            "pool_id": "1",
+            "ip_address": "192.168.122.221",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.222": {
+            "id": 221,
+            "pool_id": "1",
+            "ip_address": "192.168.122.222",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.223": {
+            "id": 222,
+            "pool_id": "1",
+            "ip_address": "192.168.122.223",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.224": {
+            "id": 223,
+            "pool_id": "1",
+            "ip_address": "192.168.122.224",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.225": {
+            "id": 224,
+            "pool_id": "1",
+            "ip_address": "192.168.122.225",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.226": {
+            "id": 225,
+            "pool_id": "1",
+            "ip_address": "192.168.122.226",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.227": {
+            "id": 226,
+            "pool_id": "1",
+            "ip_address": "192.168.122.227",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.228": {
+            "id": 227,
+            "pool_id": "1",
+            "ip_address": "192.168.122.228",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.229": {
+            "id": 228,
+            "pool_id": "1",
+            "ip_address": "192.168.122.229",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.230": {
+            "id": 229,
+            "pool_id": "1",
+            "ip_address": "192.168.122.230",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.231": {
+            "id": 230,
+            "pool_id": "1",
+            "ip_address": "192.168.122.231",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.232": {
+            "id": 231,
+            "pool_id": "1",
+            "ip_address": "192.168.122.232",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.233": {
+            "id": 232,
+            "pool_id": "1",
+            "ip_address": "192.168.122.233",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.234": {
+            "id": 233,
+            "pool_id": "1",
+            "ip_address": "192.168.122.234",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.235": {
+            "id": 234,
+            "pool_id": "1",
+            "ip_address": "192.168.122.235",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.236": {
+            "id": 235,
+            "pool_id": "1",
+            "ip_address": "192.168.122.236",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.237": {
+            "id": 236,
+            "pool_id": "1",
+            "ip_address": "192.168.122.237",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.238": {
+            "id": 237,
+            "pool_id": "1",
+            "ip_address": "192.168.122.238",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.239": {
+            "id": 238,
+            "pool_id": "1",
+            "ip_address": "192.168.122.239",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.240": {
+            "id": 239,
+            "pool_id": "1",
+            "ip_address": "192.168.122.240",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.241": {
+            "id": 240,
+            "pool_id": "1",
+            "ip_address": "192.168.122.241",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.242": {
+            "id": 241,
+            "pool_id": "1",
+            "ip_address": "192.168.122.242",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.243": {
+            "id": 242,
+            "pool_id": "1",
+            "ip_address": "192.168.122.243",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.244": {
+            "id": 243,
+            "pool_id": "1",
+            "ip_address": "192.168.122.244",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.245": {
+            "id": 244,
+            "pool_id": "1",
+            "ip_address": "192.168.122.245",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.246": {
+            "id": 245,
+            "pool_id": "1",
+            "ip_address": "192.168.122.246",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.247": {
+            "id": 246,
+            "pool_id": "1",
+            "ip_address": "192.168.122.247",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.248": {
+            "id": 247,
+            "pool_id": "1",
+            "ip_address": "192.168.122.248",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.249": {
+            "id": 248,
+            "pool_id": "1",
+            "ip_address": "192.168.122.249",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.250": {
+            "id": 249,
+            "pool_id": "1",
+            "ip_address": "192.168.122.250",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.251": {
+            "id": 250,
+            "pool_id": "1",
+            "ip_address": "192.168.122.251",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.252": {
+            "id": 251,
+            "pool_id": "1",
+            "ip_address": "192.168.122.252",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.253": {
+            "id": 252,
+            "pool_id": "1",
+            "ip_address": "192.168.122.253",
+            "status": "FREE",
+            "allocated_to_vm": null
+        },
+        "192.168.122.254": {
+            "id": 253,
+            "pool_id": "1",
+            "ip_address": "192.168.122.254",
+            "status": "FREE",
+            "allocated_to_vm": null
+        }
+    }
+}

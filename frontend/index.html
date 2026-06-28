@@ -1,21 +1,1186 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AnkaVM - Konteyner Yöneticisi</title>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AnkaVM // SaaS Virtualization Hypervisor Portal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <script>
-      (function() {
-        var theme = localStorage.getItem('clicd_theme');
-        if (theme === 'dark' || (!theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-          document.documentElement.classList.add('dark');
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: { 50: '#eff6ff', 100: '#dbeafe', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8' },
+                        slate: { 900: '#0f172a', 950: '#070a13' }
+                    }
+                }
+            }
         }
-      })();
     </script>
-  </head>
-  <body class="bg-white text-black dark:bg-gray-950 dark:text-white">
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+    <link rel="stylesheet" href="style.css" />
+    <script src="fetch_helpers.js"></script>
+    <script src="app.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-[#0b0f19] min-h-screen flex flex-col text-slate-300" x-data="vmPanel">
+
+    <!-- Glassmorphic Full Screen License Key Entry Overlay -->
+    <div x-show="!licenseStatus.is_licensed" class="fixed inset-0 bg-[#070a13]/95 backdrop-blur-md z-50 flex items-center justify-center p-4">
+        <div class="bg-[#111827] border border-red-500/30 rounded-2xl p-8 max-w-lg w-full shadow-2xl space-y-5 text-center">
+            <!-- Icon -->
+            <div class="w-16 h-16 rounded-full bg-red-500/10 border border-red-500/20 mx-auto flex items-center justify-center text-red-400 animate-pulse">
+                <i class="fa-solid fa-shield-halved text-2xl"></i>
+            </div>
+
+            <!-- Title -->
+            <div class="space-y-1">
+                <h2 class="text-xl font-bold text-white tracking-wide">Lisans Doğrulaması Gerekli</h2>
+                <p class="text-xs text-slate-400" x-text="licenseStatus.detail || 'Lisans anahtarınızı giriniz.'"></p>
+            </div>
+
+            <!-- Info Box -->
+            <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800 text-xs font-mono space-y-2 text-left">
+                <div class="flex justify-between items-center">
+                    <span class="text-slate-500">Cihaz HWID:</span>
+                    <span x-text="licenseStatus.hardware_id || 'Alınıyor...'" class="text-brand-400 font-bold select-all cursor-pointer" title="Kopyalamak için tıklayın"
+                          @click="navigator.clipboard.writeText(licenseStatus.hardware_id)"></span>
+                </div>
+                <div class="flex justify-between items-center" x-show="licenseStatus.expires_at">
+                    <span class="text-slate-500">Lisans Bitiş:</span>
+                    <span x-text="licenseStatus.expires_at" class="text-yellow-400 font-bold"></span>
+                </div>
+            </div>
+
+            <!-- License Key Form -->
+            <form @submit.prevent="updateLicense()" class="space-y-3 text-left">
+                <div class="space-y-1.5">
+                    <label class="text-[10px] uppercase font-bold text-slate-400 font-mono tracking-wider">Lisans Anahtarı</label>
+                    <input id="license-key-input" type="text" x-model="licenseKeyInput" required
+                           placeholder="ANKAVM-XXXX-XXXX-XXXX-YYYYMMDD-XXXXXXXX"
+                           class="w-full px-4 py-3 bg-slate-950 border border-slate-700 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500/30 rounded-xl text-white font-mono text-[11px] text-center tracking-widest placeholder-slate-700 transition-all"/>
+                </div>
+                <button id="license-activate-btn" type="submit"
+                        class="w-full bg-brand-500 hover:bg-brand-600 active:scale-[.98] transition-all duration-150 text-white text-xs font-bold py-3 rounded-xl shadow-lg shadow-brand-500/20 flex items-center justify-center space-x-2">
+                    <i class="fa-solid fa-circle-check"></i>
+                    <span>Lisansı Etkinleştir</span>
+                </button>
+            </form>
+
+            <!-- Footer note -->
+            <p class="text-[10px] text-slate-600 leading-relaxed">
+                Lisans anahtarınız sistem yöneticiniz tarafından sağlanmalıdır.<br>
+                HWID değerini kopyalayıp yöneticinize iletebilirsiniz.
+            </p>
+        </div>
+    </div>
+
+    <!-- Page Body Wrapper -->
+    <div class="flex-1 flex min-h-0" x-show="licenseStatus.is_licensed" style="display: none;">
+        
+        <!-- Left Sidebar Navigation -->
+        <aside class="w-60 bg-[#111827] border-r border-slate-800 flex flex-col justify-between shrink-0 sticky top-0 h-screen z-30">
+            <div class="p-5 border-b border-slate-800">
+                <div class="flex items-center space-x-3">
+                    <div class="w-8 h-8 rounded bg-brand-500 flex items-center justify-center text-white font-bold"><i class="fa-solid fa-server text-sm"></i></div>
+                    <div>
+                        <h1 class="text-base font-bold text-white tracking-wide">Anka<span class="text-brand-500">VM</span></h1>
+                        <p class="text-[9px] text-slate-500 font-mono tracking-wider uppercase">SaaS Hypervisor Node</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Navigation Sidebar Links -->
+            <nav class="flex-1 px-3 py-4 space-y-1 font-medium text-xs">
+                <button @click="setTab('dashboard')" :class="activeTab === 'dashboard' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-chart-pie text-sm" :class="activeTab === 'dashboard' ? 'text-brand-500' : ''"></i>
+                    <span>Gösterge Paneli</span>
+                </button>
+                <button @click="setTab('vms')" :class="activeTab === 'vms' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-desktop text-sm" :class="activeTab === 'vms' ? 'text-brand-500' : ''"></i>
+                    <span>Sanal Sunucular (VDS)</span>
+                </button>
+                <button @click="setTab('ipam')" :class="activeTab === 'ipam' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-map-location-dot text-sm" :class="activeTab === 'ipam' ? 'text-brand-500' : ''"></i>
+                    <span>IPAM (IP Yönetimi)</span>
+                </button>
+                <button @click="setTab('networks')" :class="activeTab === 'networks' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-network-wired text-sm" :class="activeTab === 'networks' ? 'text-brand-500' : ''"></i>
+                    <span>Ağ Köprüleri</span>
+                </button>
+                <button @click="setTab('vcenter')" :class="activeTab === 'vcenter' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-server text-sm" :class="activeTab === 'vcenter' ? 'text-brand-500' : ''"></i>
+                    <span>VCenter Entegrasyonu</span>
+                </button>
+                <button @click="setTab('modules')" :class="activeTab === 'modules' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-puzzle-piece text-sm" :class="activeTab === 'modules' ? 'text-brand-500' : ''"></i>
+                    <span>Modüller</span>
+                </button>
+                <button @click="setTab('images')" :class="activeTab === 'images' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-compact-disc text-sm" :class="activeTab === 'images' ? 'text-brand-500' : ''"></i>
+                    <span>İmajlar</span>
+                </button>
+                <button @click="setTab('wisecp')" :class="activeTab === 'wisecp' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-plug text-sm" :class="activeTab === 'wisecp' ? 'text-brand-500' : ''"></i>
+                    <span>WiseCP Entegrasyonu</span>
+                </button>
+                <button @click="setTab('storage')" :class="activeTab === 'storage' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-database text-sm" :class="activeTab === 'storage' ? 'text-brand-500' : ''"></i>
+                    <span>Disk Depolama (Storage)</span>
+                </button>
+                <button @click="setTab('license')" :class="activeTab === 'license' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-key text-sm" :class="activeTab === 'license' ? 'text-brand-500' : ''"></i>
+                    <span>Lisans Denetimi</span>
+                </button>
+            </nav>
+
+            <div class="p-4 border-t border-slate-800 font-mono text-[9px] text-slate-500">
+                <div class="flex items-center space-x-2 mb-1.5" x-show="licenseStatus.is_licensed">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    <span class="text-slate-400 font-semibold uppercase">LİSANS DOĞRULANDI</span>
+                </div>
+                <div class="flex items-center space-x-2 mb-1.5" x-show="!licenseStatus.is_licensed">
+                    <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+                    <span class="text-slate-400 font-semibold uppercase">LİSANS GEÇERSİZ</span>
+                </div>
+                <div>YÜKLEME TÜRÜ: KVM+POSTGRES</div>
+            </div>
+        </aside>
+
+        <!-- Main Workspace -->
+        <div class="flex-1 flex flex-col min-w-0">
+            <header class="h-16 border-b border-slate-800 bg-[#111827] flex items-center justify-between px-6">
+                <div class="flex items-center space-x-3">
+                    <h2 class="text-sm font-bold text-white uppercase tracking-wider">
+                        <span x-show="activeTab === 'dashboard'">GÖSTERGE PANELİ</span>
+                        <span x-show="activeTab === 'vms'">SANAL SUNUCU LİSTESİ</span>
+                        <span x-show="activeTab === 'ipam'">IPAM YÖNETİMİ</span>
+                        <span x-show="activeTab === 'networks'">SANAL AĞ KÖPRÜLERİ</span>
+                        <span x-show="activeTab === 'storage'">DEPOLAMA HAVUZLARI</span>
+                        <span x-show="activeTab === 'license'">LİSANS YÖNETİCİSİ</span>
+                        <span x-show="activeTab === 'wisecp'">WISECP ENTEGRASYONU</span>
+                        <span x-show="activeTab === 'vcenter'">VCENTER ENTEGRASYONU</span>
+                        <span x-show="activeTab === 'images'">İMAJ YÖNETİMİ</span>
+                        <span x-show="activeTab === 'modules'">MODÜL MARKET</span>
+                    </h2>
+                    <div class="h-4 w-[1px] bg-slate-800"></div>
+                    <span class="text-[11px] font-mono text-slate-400" x-text="`Aktif VM: ${hostStats.vms_running} / Toplam: ${hostStats.vms_total}`"></span>
+                </div>
+            </header>
+
+            <main class="flex-1 p-6 overflow-y-auto">
+                
+                <!-- Skeleton Loader Shimmer Container -->
+                <div class="skeleton-wrapper hidden space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+                        <div class="shimmer h-32 rounded-lg border border-slate-800"></div>
+                        <div class="shimmer h-32 rounded-lg border border-slate-800"></div>
+                        <div class="shimmer h-32 rounded-lg border border-slate-800"></div>
+                    </div>
+                    <div class="shimmer h-64 rounded-lg border border-slate-800"></div>
+                </div>
+
+                <!-- Actual Data Content -->
+                <div class="data-content-wrapper space-y-6">
+                    
+                    <!-- 1. DASHBOARD TAB -->
+                    <div x-show="activeTab === 'dashboard'" x-cloak class="space-y-6">
+                        <!-- Top metrics -->
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+                            <div class="corp-card rounded-lg p-4">
+                                <h3 class="text-xs uppercase text-slate-400 font-bold mb-1">Host CPU</h3>
+                                <p class="text-xl font-bold text-white mb-2" x-text="`${hostStats.cpu_usage}%`"></p>
+                                <div class="relative h-24 flex items-center justify-center"><canvas id="cpuChartCanvas"></canvas></div>
+                            </div>
+                            <div class="corp-card rounded-lg p-4">
+                                <h3 class="text-xs uppercase text-slate-400 font-bold mb-1">Host RAM</h3>
+                                <p class="text-xl font-bold text-white mb-2" x-text="`${hostStats.ram_used_gb}G / ${hostStats.ram_total_gb}G`"></p>
+                                <div class="relative h-24 flex items-center justify-center"><canvas id="ramChartCanvas"></canvas></div>
+                            </div>
+                            <div class="corp-card rounded-lg p-4">
+                                <h3 class="text-xs uppercase text-slate-400 font-bold mb-1">Host Disk</h3>
+                                <p class="text-xl font-bold text-white mb-2" x-text="`${hostStats.disk_used_gb}G / ${hostStats.disk_total_gb}G`"></p>
+                                <div class="relative h-24 flex items-center justify-center"><canvas id="diskChartCanvas"></canvas></div>
+                            </div>
+                        </div>
+
+                        <!-- Storage Pools Health Chart (ApexCharts Stacked Bar) -->
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <div class="lg:col-span-2 corp-card rounded-lg p-5">
+                                <h3 class="text-xs uppercase text-white font-bold mb-4">LVM & ZFS Storage Pools Health (ApexCharts)</h3>
+                                <div id="storagePoolApexChart" class="w-full"></div>
+                            </div>
+                            <!-- Storage List -->
+                            <div class="corp-card rounded-lg p-5 space-y-4">
+                                <h3 class="text-xs uppercase text-white font-bold">Disk Depolama Listesi</h3>
+                                <div class="space-y-3">
+                                    <template x-for="pool in storagePools">
+                                        <div class="bg-slate-900/60 p-3 rounded border border-slate-800 text-xs space-y-2">
+                                            <div class="flex justify-between font-bold">
+                                                <span x-text="pool.name" class="text-white"></span>
+                                                <span x-text="pool.pool_type" class="text-brand-500 font-mono text-[10px]"></span>
+                                            </div>
+                                            <div class="text-[10px] text-slate-400 font-mono" x-text="`Dizin: ${pool.mount_path}`"></div>
+                                            <div class="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
+                                                <div class="h-full rounded-full transition-all duration-500" :class="parseFloat(pool.usage_percent) >= 90 ? 'bg-red-500' : 'bg-brand-500'" :style="`width: ${pool.usage_percent}%`"></div>
+                                            </div>
+                                            <div class="flex justify-between text-[10px] text-slate-500 font-mono">
+                                                <span x-text="`Kullanılan: ${pool.allocated_gb} GB`"></span>
+                                                <span x-text="`Boş: ${pool.free_gb} GB (${pool.usage_percent}%)`"></span>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Host Logger -->
+                        <div class="corp-card rounded-lg p-5">
+                            <h2 class="text-xs font-bold uppercase text-slate-200 mb-3">Hypervisor Eylem Günlüğü</h2>
+                            <div class="h-44 bg-slate-950/80 border border-slate-800/80 rounded p-3 overflow-y-auto font-mono text-[10px] space-y-1">
+                                <template x-for="log in activityLogs">
+                                    <div class="flex items-start space-x-2">
+                                        <span class="text-slate-600" x-text="`[${log.timestamp}]`"></span>
+                                        <span :class="{'text-brand-500': log.level==='INFO', 'text-emerald-500': log.level==='SUCCESS', 'text-red-500': log.level!=='INFO'&&log.level!=='SUCCESS'}" class="font-bold shrink-0" x-text="`[${log.level}]`"></span>
+                                        <span class="text-slate-300" x-text="log.message"></span>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 2. VMS LIST TAB -->
+                    <div x-show="activeTab === 'vms'" x-cloak class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div class="lg:col-span-2 space-y-5">
+                            <div class="corp-card rounded-lg p-5">
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
+                                    <input type="text" x-model="searchQuery" placeholder="Sunucu, IP veya OS ara..." class="pl-3 pr-3 py-1.5 bg-[#0b0f19] border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-brand-500 font-mono w-full max-w-xs"/>
+                                    <button @click="showCreateModal = true" class="btn-primary text-xs font-semibold py-1.5 px-3 rounded">VDS OLUŞTUR</button>
+                                </div>
+                                <div class="overflow-x-auto">
+                                    <table class="min-w-full divide-y divide-slate-800 text-xs">
+                                        <thead>
+                                            <tr class="text-slate-500 font-semibold uppercase text-left">
+                                                <th class="py-2.5 px-3">Sunucu Adı</th>
+                                                <th class="py-2.5 px-3">Durum</th>
+                                                <th class="py-2.5 px-3">Kaynak</th>
+                                                <th class="py-2.5 px-3">Disk Bar (Proxmox Style)</th>
+                                                <th class="py-2.5 px-3">IP Adresi</th>
+                                                <th class="py-2.5 px-3 text-right">Eylemler</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-slate-800/40 font-mono">
+                                            <template x-for="vm in filteredVms" :key="vm.name">
+                                                <tr @click="selectVm(vm.name)" :class="selectedVmName === vm.name ? 'bg-brand-500/5' : 'hover:bg-slate-900/30'" class="cursor-pointer">
+                                                    <td class="py-2.5 px-3 font-bold text-white" x-text="vm.name"></td>
+                                                    <td class="py-2.5 px-3">
+                                                        <span :class="vm.status === 'running' ? 'text-emerald-400' : 'text-red-400'" class="font-bold" x-text="vm.status === 'running' ? 'Aktif' : 'Kapalı'"></span>
+                                                    </td>
+                                                    <td class="py-2.5 px-3 text-[10px]" x-text="`${vm.cpu} CPU / ${(vm.ram_mb/1024).toFixed(0)}G`"></td>
+                                                    <!-- Proxmox Progress Bar Rendered dynamically -->
+                                                    <td class="py-2.5 px-3" x-html="renderProxmoxProgressBar(vm.disk_used_gb || 2.0, vm.disk_gb)"></td>
+                                                    <td class="py-2.5 px-3 text-slate-300" x-text="vm.ip_address"></td>
+                                                    <td class="py-2.5 px-3 text-right space-x-1" @click.stop>
+                                                        <button x-show="vm.status !== 'running'" @click="triggerAction(vm.name, 'start')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-emerald-400 hover:text-emerald-300" title="Sunucuyu Başlat"><i class="fa-solid fa-play text-[9px]"></i></button>
+                                                        <button x-show="vm.status === 'running'" @click="triggerAction(vm.name, 'stop')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-red-400 hover:text-red-300" title="Sunucuyu Durdur"><i class="fa-solid fa-stop text-[9px]"></i></button>
+                                                        <button @click="if(confirm('Sunucuyu yeniden kurmak istediğinizden emin misiniz?')) triggerAction(vm.name, 'rebuild')" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-amber-500 hover:text-amber-300" title="Sunucuyu Yeniden Kur"><i class="fa-solid fa-rotate text-[9px]"></i></button>
+                                                        <button @click="openConsole(vm.name)" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-brand-500 hover:text-brand-300" title="Konsol Bağlantısı"><i class="fa-solid fa-terminal text-[9px]"></i></button>
+                                                        <button @click="deleteVm(vm.name)" class="w-6 h-6 rounded bg-slate-900 border border-slate-800 text-red-500 hover:text-red-300" title="Sunucuyu Tamamen Sil"><i class="fa-solid fa-trash-can text-[9px]"></i></button>
+                                                    </td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- VDS Inspector Panels -->
+                        <div class="space-y-5">
+                            <!-- VDS Kontrol Merkezi (Advanced Actions) -->
+                            <div class="corp-card rounded-lg p-5 space-y-4" x-show="selectedVmName">
+                                <div class="flex justify-between items-center">
+                                    <h3 class="text-xs font-bold uppercase text-white" x-text="`VDS: ${selectedVmName}`"></h3>
+                                    <span class="text-[10px] px-2 py-0.5 rounded font-mono font-bold" 
+                                          :class="vms.find(v => v.name === selectedVmName)?.status === 'running' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'"
+                                          x-text="vms.find(v => v.name === selectedVmName)?.status === 'running' ? 'AKTİF' : 'KAPALI'"></span>
+                                </div>
+                                <div class="grid grid-cols-2 gap-2 text-center text-[10px] font-semibold">
+                                    <button @click="triggerAction(selectedVmName, 'start')" 
+                                            :disabled="vms.find(v => v.name === selectedVmName)?.status === 'running'"
+                                            class="p-2.5 rounded bg-slate-900 border border-slate-800 text-emerald-400 hover:bg-emerald-500 hover:text-white disabled:opacity-50 disabled:hover:bg-slate-900 disabled:hover:text-emerald-400 transition flex flex-col items-center justify-center space-y-1">
+                                        <i class="fa-solid fa-play text-sm"></i>
+                                        <span>Başlat</span>
+                                    </button>
+                                    <button @click="triggerAction(selectedVmName, 'stop')" 
+                                            :disabled="vms.find(v => v.name === selectedVmName)?.status !== 'running'"
+                                            class="p-2.5 rounded bg-slate-900 border border-slate-800 text-red-400 hover:bg-red-500 hover:text-white disabled:opacity-50 disabled:hover:bg-slate-900 disabled:hover:text-red-400 transition flex flex-col items-center justify-center space-y-1">
+                                        <i class="fa-solid fa-stop text-sm"></i>
+                                        <span>Durdur</span>
+                                    </button>
+                                    <button @click="triggerAction(selectedVmName, 'restart')" 
+                                            :disabled="vms.find(v => v.name === selectedVmName)?.status !== 'running'"
+                                            class="p-2.5 rounded bg-slate-900 border border-slate-800 text-brand-500 hover:bg-brand-500 hover:text-white disabled:opacity-50 disabled:hover:bg-slate-900 disabled:hover:text-brand-500 transition flex flex-col items-center justify-center space-y-1">
+                                        <i class="fa-solid fa-arrows-rotate text-sm"></i>
+                                        <span>Yeniden Başlat</span>
+                                    </button>
+                                    <button @click="if (confirm('Bu sunucuyu sıfırlayıp yeniden kurmak istediğinizden emin misiniz? Tüm disk verileriniz silinecektir!')) triggerAction(selectedVmName, 'rebuild')" 
+                                            class="p-2.5 rounded bg-slate-900 border border-slate-800 text-amber-400 hover:bg-amber-500 hover:text-white transition flex flex-col items-center justify-center space-y-1">
+                                        <i class="fa-solid fa-rotate-right text-sm"></i>
+                                        <span>Yeniden Kur</span>
+                                    </button>
+                                    <button @click="openConsole(selectedVmName)" 
+                                            class="col-span-2 p-2.5 rounded bg-brand-500/10 border border-brand-500/20 text-brand-400 hover:bg-brand-500 hover:text-white transition flex items-center justify-center space-x-2">
+                                        <i class="fa-solid fa-display text-xs"></i>
+                                        <span class="text-[10px] font-bold">VNC / Grafik Konsolu Aç</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Snapshot & Yedekleme Paneli -->
+                            <div class="corp-card rounded-lg p-5 space-y-4" x-show="selectedVmName">
+                                <h3 class="text-xs font-bold uppercase text-white flex items-center space-x-1.5">
+                                    <i class="fa-solid fa-camera"></i>
+                                    <span>Snapshot & Yedekleme</span>
+                                </h3>
+                                
+                                <form @submit.prevent="createSnapshot()" class="space-y-2 font-mono text-[10px]">
+                                    <div class="flex space-x-2">
+                                        <input type="text" x-model="snapshotForm.name" required placeholder="Yedek Adı (Örn: snap1)" 
+                                               class="flex-1 p-2 bg-slate-950 border border-slate-800 rounded focus:outline-none focus:border-brand-500 text-white text-xs"/>
+                                        <button type="submit" class="px-3 bg-brand-500 hover:bg-brand-600 rounded text-white font-sans font-bold">Yedek Al</button>
+                                    </div>
+                                    <input type="text" x-model="snapshotForm.description" placeholder="Açıklama girin..." 
+                                           class="w-full p-2 bg-slate-950 border border-slate-800 rounded focus:outline-none focus:border-brand-500 text-white text-[10px]"/>
+                                </form>
+
+                                <div class="space-y-1.5 max-h-48 overflow-y-auto">
+                                    <div class="text-[9px] uppercase font-bold text-slate-500 tracking-wider">Mevcut Snapshot Noktaları</div>
+                                    <template x-if="selectedVmSnapshots.length === 0">
+                                        <div class="text-[10px] text-slate-600 text-center py-2 italic bg-slate-950/20 border border-slate-900 rounded">Alınmış yedek bulunmuyor.</div>
+                                    </template>
+                                    <template x-for="snap in selectedVmSnapshots">
+                                        <div class="bg-slate-950/60 p-2.5 rounded border border-slate-900 flex justify-between items-center text-[10px] font-mono">
+                                            <div class="space-y-0.5">
+                                                <div class="font-bold text-white" x-text="snap.name"></div>
+                                                <div class="text-[9px] text-slate-400" x-text="snap.description"></div>
+                                                <div class="text-[8px] text-slate-600" x-text="snap.timestamp"></div>
+                                            </div>
+                                            <button @click="revertSnapshot(snap.name)" 
+                                                    class="px-2 py-1 rounded bg-brand-500/10 hover:bg-brand-500 text-brand-400 hover:text-white font-sans font-bold text-[9px] transition">
+                                                Geri Yükle
+                                            </button>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <!-- Telemetry Chart -->
+                            <div class="corp-card rounded-lg p-5">
+                                <h2 class="text-xs font-bold uppercase mb-3">VDS Canlı Kaynak Telemetrisi</h2>
+                                <div x-show="selectedVmName" class="space-y-4">
+                                    <div class="h-32 bg-slate-950/40 rounded border border-slate-800 p-2"><canvas id="vmPerformanceChartCanvas"></canvas></div>
+                                </div>
+                                <div x-show="!selectedVmName" class="text-xs text-slate-500 text-center py-8">Grafikleri görüntülemek için bir sunucu seçin.</div>
+                            </div>
+
+                            <!-- Traffic vnstat monitor panel -->
+                            <div class="corp-card rounded-lg p-5 space-y-3" x-show="selectedVmName">
+                                <h3 class="text-xs font-bold uppercase text-white">vnstat Ağ Trafik İzleme</h3>
+                                <template x-if="selectedVmTraffic">
+                                    <div class="space-y-2 text-xs font-mono">
+                                        <div class="flex justify-between">
+                                            <span>İndirme Hızı (RX):</span>
+                                            <span class="text-emerald-400 font-bold" x-text="`${(selectedVmTraffic.rx_bytes_sec / 1024).toFixed(1)} KB/s`"></span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span>Yükleme Hızı (TX):</span>
+                                            <span class="text-brand-500" x-text="`${(selectedVmTraffic.tx_bytes_sec / 1024).toFixed(1)} KB/s`"></span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span>İndirme Paket (PPS):</span>
+                                            <span x-text="`${selectedVmTraffic.rx_packets_sec} pps`"></span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span>Yükleme Paket (PPS):</span>
+                                            <span x-text="`${selectedVmTraffic.tx_packets_sec} pps`"></span>
+                                        </div>
+                                        <!-- DDoS alarm trigger indicator -->
+                                        <div class="p-2 rounded mt-2 text-[10px] text-center font-bold uppercase" :class="selectedVmTraffic.ddos_alert ? 'bg-red-500/20 text-red-400 border border-red-500/50 animate-pulse' : 'bg-slate-900/60 text-slate-400 border border-slate-800'">
+                                            <span x-text="selectedVmTraffic.ddos_alert ? '🚨 SALDIRI ALARMI: DDoS Algılandı!' : 'Normal Ağ Trafik Seviyesi'"></span>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 3. IPAM TAB -->
+                    <div x-show="activeTab === 'ipam'" x-cloak class="space-y-6">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                            <template x-for="pool in ipPools">
+                                <div class="corp-card rounded-lg p-5">
+                                    <h3 class="text-xs uppercase text-white font-bold" x-text="`HAVUZ: ${pool.name}`"></h3>
+                                    <p class="text-[10px] text-slate-500 font-mono mt-1" x-text="`CIDR: ${pool.cidr} / GW: ${pool.gateway}`"></p>
+                                    <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-800 mt-4">
+                                        <div :style="`width: ${pool.usage_percent}%`" class="bg-brand-500 h-full"></div>
+                                    </div>
+                                    <div class="flex justify-between text-[9px] text-slate-500 mt-1">
+                                        <span x-text="`Kullanılan: ${pool.allocated_ips} IP`"></span>
+                                        <span x-text="`Boş: ${pool.free_ips} IP`"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- IP Kiralamaları & Log audit trail -->
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <div class="lg:col-span-2 corp-card rounded-lg p-5">
+                                <div class="flex justify-between items-center mb-4">
+                                    <h2 class="text-xs font-bold uppercase text-slate-200">Aktif IP Kiralamaları</h2>
+                                    <button @click="showCreatePoolModal = true" class="btn-primary text-xs font-semibold py-1.5 px-3 rounded">Yeni IPAM Havuzu Ekle</button>
+                                </div>
+                                <table class="min-w-full divide-y divide-slate-800 font-mono text-xs">
+                                    <thead>
+                                        <tr class="text-slate-500 uppercase text-left">
+                                            <th class="py-2.5 px-3">IP Adresi</th>
+                                            <th class="py-2.5 px-3">Havuz</th>
+                                            <th class="py-2.5 px-3">Bağlı VM</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <template x-for="lease in ipLeases" :key="lease.ip_address">
+                                            <tr>
+                                                <td class="py-2.5 px-3 font-bold text-white" x-text="lease.ip_address"></td>
+                                                <td class="py-2.5 px-3" x-text="`pool-${lease.pool_id}`"></td>
+                                                <td class="py-2.5 px-3 text-brand-500" x-text="lease.allocated_to_vm || 'Rezerve'"></td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- IPAM transaction logs -->
+                            <div class="corp-card rounded-lg p-5">
+                                <h3 class="text-xs font-bold uppercase text-white mb-3">IPAM Değişiklik Günlüğü</h3>
+                                <div class="space-y-2 h-64 overflow-y-auto font-mono text-[10px]">
+                                    <template x-for="log in ipamLogs">
+                                        <div class="p-2 bg-slate-950/60 rounded border border-slate-900 flex flex-col">
+                                            <div class="flex justify-between font-bold">
+                                                <span x-text="log.ip_address" class="text-white"></span>
+                                                <span :class="log.action_type === 'LEASE' ? 'text-emerald-400' : 'text-red-400'" x-text="log.action_type"></span>
+                                            </div>
+                                            <div class="flex justify-between text-slate-500 mt-1 text-[9px]">
+                                                <span x-text="`VDS: ${log.vm_name}`"></span>
+                                                <span x-text="log.timestamp"></span>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 4. STORAGE TAB -->
+                    <div x-show="activeTab === 'storage'" x-cloak class="space-y-6">
+                        <div class="corp-card rounded-lg p-5">
+                            <h2 class="text-xs font-bold uppercase text-white mb-4">Storage Pools (LVM / ZFS Disk Yönetimi)</h2>
+                            <table class="min-w-full divide-y divide-slate-800 text-xs font-mono">
+                                <thead>
+                                    <tr class="text-slate-500 uppercase text-left font-semibold">
+                                        <th class="py-2.5 px-3">Havuz Adı</th>
+                                        <th class="py-2.5 px-3">Havuz Tipi</th>
+                                        <th class="py-2.5 px-3">Disk Bağlantı Yolu</th>
+                                        <th class="py-2.5 px-3">Kapasite</th>
+                                        <th class="py-2.5 px-3">Kullanılan</th>
+                                        <th class="py-2.5 px-3">Boş Alan</th>
+                                        <th class="py-2.5 px-3">Doluluk</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="pool in storagePools">
+                                        <tr>
+                                            <td class="py-2.5 px-3 font-bold text-white" x-text="pool.name"></td>
+                                            <td class="py-2.5 px-3 text-brand-500" x-text="pool.pool_type"></td>
+                                            <td class="py-2.5 px-3 text-slate-500 text-[10px]" x-text="pool.mount_path"></td>
+                                            <td class="py-2.5 px-3 text-slate-300" x-text="`${pool.capacity_gb} GB`"></td>
+                                            <td class="py-2.5 px-3 text-slate-300" x-text="`${pool.allocated_gb} GB`"></td>
+                                            <td class="py-2.5 px-3 text-slate-300" x-text="`${pool.free_gb} GB`"></td>
+                                            <td class="py-2.5 px-3">
+                                                <div class="flex items-center space-x-2">
+                                                    <div class="w-16 bg-slate-900 rounded-full h-1.5 overflow-hidden">
+                                                        <div class="h-full rounded-full bg-brand-500" :style="`width: ${pool.usage_percent}%`"></div>
+                                                    </div>
+                                                    <span x-text="`${pool.usage_percent}%`" class="text-[10px] font-bold"></span>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 5. LICENSE TAB -->
+                    <div x-show="activeTab === 'license'" x-cloak class="space-y-6">
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <!-- Verification Card -->
+                            <div class="lg:col-span-2 corp-card rounded-lg p-5 space-y-4">
+                                <h3 class="text-xs uppercase text-white font-bold">AnkaVM Lisans Anahtarı Kontrol Paneli</h3>
+                                <p class="text-xs text-slate-400 font-sans">Kurumsal KVM sanallaştırma altyapısının lisans doğrulaması, yerel veya uzak lisans sunucuları üzerinden dynamic Motherboard hardware_id doğrulaması ile çalışmaktadır.</p>
+                                
+                                <div class="p-3 bg-slate-900/60 rounded border border-slate-800 text-xs font-mono space-y-3">
+                                    <div class="flex justify-between">
+                                        <span>Lisans Sahibi:</span>
+                                        <span x-text="licenseStatus.owner_name" class="font-bold text-white"></span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span>Motherboard UUID (Hardware ID):</span>
+                                        <span x-text="licenseStatus.hardware_id" class="text-brand-500 select-all font-bold"></span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span>Yetkilendirilen IP Adresi:</span>
+                                        <span x-text="licenseStatus.allowed_ip" class="text-slate-300 font-bold"></span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span>Yetkilendirilen Alan Adı (Domain):</span>
+                                        <span x-text="licenseStatus.allowed_domain" class="text-slate-300"></span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span>Bitiş Tarihi (Expiration):</span>
+                                        <span x-text="licenseStatus.expires_at ? new Date(licenseStatus.expires_at).toLocaleString() : 'N/A'" class="text-emerald-400"></span>
+                                    </div>
+                                    <div class="flex justify-between border-t border-slate-800 pt-2">
+                                        <span>Lisans Durumu:</span>
+                                        <span :class="licenseStatus.is_licensed ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'" x-text="licenseStatus.is_licensed ? '✓ LİSANSLI VE AKTİF' : '✗ GEÇERSİZ / SÜRESİ DOLMUŞ LİSANS'"></span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Update Card -->
+                            <div class="corp-card rounded-lg p-5 space-y-4">
+                                <h3 class="text-xs font-bold uppercase text-white">Lisans Güncelle</h3>
+                                <form @submit.prevent="updateLicense()" class="space-y-3 font-mono text-xs">
+                                    <label class="text-[10px] text-slate-500">YENİ LİSANS ANAHTARI GİRİNİZ:</label>
+                                    <input type="text" x-model="licenseKeyInput" required placeholder="ANKAVM-PRO-XXXX-XXXX" class="w-full p-2.5 bg-slate-900 border border-slate-700 rounded text-white text-xs"/>
+                                    <button type="submit" class="w-full btn-primary text-xs font-semibold py-2 rounded">KODU ETKİNLEŞTİR</button>
+                                </form>
+                                <div class="bg-slate-950/60 p-2 rounded text-[10px] text-slate-500 font-sans leading-relaxed">
+                                    <strong>Lisans Bilgilendirmesi:</strong><br>
+                                    Platform lisans anahtarı sha256 hash imzasıyla yerel watchdog ile izlenmektedir. Sahte lisans kodları sistemi otomatik olarak lockout durumuna alarak virtual_servers operasyonlarını durdurur.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- VCENTER TAB -->
+                    <div x-show="activeTab === 'vcenter'" x-cloak class="space-y-6">
+                        <div class="corp-card rounded-lg p-5 space-y-4 max-w-2xl">
+                            <h3 class="text-xs font-bold uppercase text-white flex items-center space-x-1.5">
+                                <i class="fa-solid fa-server text-brand-500"></i>
+                                <span>VCenter Bağlantı Ayarları</span>
+                            </h3>
+                            <p class="text-xs text-slate-400">AnkaVM'i mevcut VCenter altyapınızla entegre ederek ISO ve imajları senkronize edebilirsiniz.</p>
+                            <form @submit.prevent="saveVcenterConfig()" class="space-y-3 font-mono text-xs">
+                                <div>
+                                    <label class="text-[9px] text-slate-500 uppercase">VCenter Host / IP:</label>
+                                    <input type="text" x-model="vcenterConfig.host" required placeholder="vcenter.sirket.local" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
+                                </div>
+                                <div>
+                                    <label class="text-[9px] text-slate-500 uppercase">Kullanıcı Adı:</label>
+                                    <input type="text" x-model="vcenterConfig.username" required placeholder="administrator@vsphere.local" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
+                                </div>
+                                <div>
+                                    <label class="text-[9px] text-slate-500 uppercase">Şifre:</label>
+                                    <input type="password" x-model="vcenterConfig.password" required placeholder="********" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
+                                </div>
+                                <button type="submit" class="btn-primary px-4 py-2 rounded text-xs font-bold">
+                                    <span x-text="vcenterConfig.is_active ? 'Bağlantı Aktif (Yenile)' : 'Bağlantıyı Test Et ve Kaydet'"></span>
+                                </button>
+                            </form>
+                        </div>
+
+                        <!-- VCenter Discovery Panel -->
+                        <div x-show="vcenterConfig.is_active" class="bg-slate-900/50 p-0 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm overflow-hidden mt-6">
+                            <div class="p-5 border-b border-slate-800 flex justify-between items-center bg-[#111827]">
+                                <h3 class="text-sm font-bold text-white flex items-center space-x-2">
+                                    <i class="fa-solid fa-radar text-brand-500"></i>
+                                    <span>VCenter Keşfedilen Kaynaklar (Discovery)</span>
+                                </h3>
+                                <button @click="fetchVcenterDiscovery()" class="text-xs text-brand-500 hover:text-white transition"><i class="fa-solid fa-rotate-right mr-1"></i>Yenile</button>
+                            </div>
+                            <div class="overflow-x-auto max-h-96 overflow-y-auto">
+                                <table class="w-full text-left border-collapse">
+                                    <thead>
+                                        <tr class="bg-[#111827] text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                                            <th class="p-4 border-b border-slate-800">Kaynak Adı</th>
+                                            <th class="p-4 border-b border-slate-800">Tür</th>
+                                            <th class="p-4 border-b border-slate-800 text-center">Kapasite / Bilgi</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="text-xs font-medium text-slate-300 divide-y divide-slate-800/50">
+                                        <template x-for="item in vcenterDiscovery" :key="item.name + item.type">
+                                            <tr class="hover:bg-slate-800/30 transition">
+                                                <td class="p-4 flex items-center space-x-3">
+                                                    <i class="fa-solid" :class="item.type === 'Datastore' ? 'fa-database text-emerald-500' : 'fa-network-wired text-brand-500'"></i>
+                                                    <span x-text="item.name"></span>
+                                                </td>
+                                                <td class="p-4 text-slate-400" x-text="item.type"></td>
+                                                <td class="p-4 text-center">
+                                                    <span x-show="item.type === 'Datastore'" class="text-[10px] text-slate-400" x-text="`Kapasite: ${item.capacityGB}GB / Boş: ${item.freeGB}GB`"></span>
+                                                    <span x-show="item.type === 'Network'" class="text-[10px] text-slate-400">PortGroup Ready</span>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                        <tr x-show="vcenterDiscovery.length === 0">
+                                            <td colspan="3" class="p-4 text-center text-slate-500">Henüz kaynak keşfedilmedi. Bağlantıyı test edin.</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- IMAGES TAB -->
+                    <div x-show="activeTab === 'images'" x-cloak class="space-y-6">
+                        <!-- Cloud Images (Hazır İmaj Kütüphanesi) -->
+                        <div class="bg-slate-900/50 p-0 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm overflow-hidden">
+                            <div class="p-5 border-b border-slate-800 flex justify-between items-center bg-[#111827]">
+                                <h3 class="text-sm font-bold text-white flex items-center space-x-2">
+                                    <i class="fa-solid fa-cloud-arrow-down text-brand-500"></i>
+                                    <span>Hazır İmaj Kütüphanesi (Bulut)</span>
+                                </h3>
+                            </div>
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-left border-collapse">
+                                    <thead>
+                                        <tr class="bg-[#111827] text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                                            <th class="p-4 border-b border-slate-800">İşletim Sistemi</th>
+                                            <th class="p-4 border-b border-slate-800 text-right">İşlem</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="text-xs font-medium text-slate-300 divide-y divide-slate-800/50">
+                                        <template x-for="cImg in cloudImages" :key="cImg.name">
+                                            <tr class="hover:bg-slate-800/30 transition">
+                                                <td class="p-4 flex items-center space-x-3">
+                                                    <i class="fa-brands text-lg" :class="cImg.icon"></i>
+                                                    <div>
+                                                        <span x-text="cImg.name"></span>
+                                                        <template x-if="activeDownloads[cImg.filename]">
+                                                            <div class="mt-2 w-48 bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                                                                <div class="bg-brand-500 h-1.5 transition-all duration-300" :style="`width: ${activeDownloads[cImg.filename].progress}%`"></div>
+                                                            </div>
+                                                            <div class="text-[9px] text-slate-400 mt-0.5 font-mono" x-text="`${activeDownloads[cImg.filename].progress}% - ${activeDownloads[cImg.filename].status}`"></div>
+                                                        </template>
+                                                    </div>
+                                                </td>
+                                                <td class="p-4 text-right">
+                                                    <button @click="downloadCloudImage(cImg.name, cImg.url)" class="btn-primary px-3 py-1.5 rounded text-xs" :disabled="activeDownloads[cImg.filename] && activeDownloads[cImg.filename].status === 'downloading'">
+                                                        <i class="fa-solid fa-download mr-1"></i>
+                                                        <span x-text="(activeDownloads[cImg.filename] && activeDownloads[cImg.filename].status === 'downloading') ? 'İndiriliyor...' : 'İndir ve Kur'"></span>
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Custom Image Upload -->
+                        <div class="bg-slate-900/50 p-6 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm relative overflow-hidden group mt-6">
+                            <div class="absolute inset-0 bg-gradient-to-br from-brand-500/5 to-transparent opacity-0 group-hover:opacity-100 transition duration-500"></div>
+                            <h3 class="text-sm font-bold text-white mb-4 relative flex items-center space-x-2">
+                                <i class="fa-solid fa-cloud-arrow-up text-brand-500"></i>
+                                <span>Özel İmaj Yükle (Local/VCenter)</span>
+                            </h3>
+                            <div class="flex items-center justify-center w-full">
+                                <label for="dropzone-file" class="flex flex-col items-center justify-center w-full h-40 border-2 border-slate-700 border-dashed rounded-xl cursor-pointer bg-slate-950/50 hover:bg-slate-800/50 transition">
+                                    <div class="flex flex-col items-center justify-center pt-5 pb-6">
+                                        <i class="fa-solid fa-upload text-3xl text-slate-500 mb-3"></i>
+                                        <p class="mb-2 text-sm text-slate-400"><span class="font-semibold text-brand-500">Tıklayın</span> veya sürükleyip bırakın</p>
+                                        <p class="text-xs text-slate-500">ISO veya VM Template (.ova, .vmdk)</p>
+                                    </div>
+                                    <input id="dropzone-file" type="file" class="hidden" @change="uploadImage" accept=".iso,.img,.qcow2,.ova,.vmdk" />
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="bg-slate-900/50 p-0 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm overflow-hidden">
+                            <div class="p-5 border-b border-slate-800 flex justify-between items-center bg-[#111827]">
+                                <h3 class="text-sm font-bold text-white flex items-center space-x-2">
+                                    <i class="fa-solid fa-list text-brand-500"></i>
+                                    <span>Mevcut İmajlar</span>
+                                </h3>
+                            </div>
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-left border-collapse">
+                                    <thead>
+                                        <tr class="bg-[#111827] text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                                            <th class="p-4 border-b border-slate-800">İmaj Adı</th>
+                                            <th class="p-4 border-b border-slate-800">Tür</th>
+                                            <th class="p-4 border-b border-slate-800 text-center">Durum</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="text-xs font-medium text-slate-300 divide-y divide-slate-800/50">
+                                        <template x-for="img in images" :key="img.id">
+                                            <tr class="hover:bg-slate-800/30 transition">
+                                                <td class="p-4 flex items-center space-x-3"><i class="fa-solid fa-compact-disc text-slate-500 text-lg"></i><span x-text="img.name"></span></td>
+                                                <td class="p-4 text-slate-400" x-text="img.is_template ? 'Template' : 'ISO Image'"></td>
+                                                <td class="p-4 text-center">
+                                                    <span x-show="img.status === 'ready'" class="px-2 py-1 rounded bg-green-500/10 text-green-500 border border-green-500/20 text-[10px]">Ready</span>
+                                                    <span x-show="img.status === 'uploading'" class="px-2 py-1 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20 text-[10px] animate-pulse">Uploading</span>
+                                                    <span x-show="img.status === 'failed'" class="px-2 py-1 rounded bg-red-500/10 text-red-500 border border-red-500/20 text-[10px]">Failed</span>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                        <tr x-show="images.length === 0">
+                                            <td colspan="3" class="p-4 text-center text-slate-500">Hiç imaj bulunamadı.</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- MODULES TAB -->
+                    <div x-show="activeTab === 'modules'" x-cloak class="space-y-6">
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            <template x-for="mod in systemModules" :key="mod.id">
+                                <div class="bg-slate-900/50 p-6 rounded-2xl border shadow-xl backdrop-blur-sm relative overflow-hidden group transition"
+                                     :class="(mod.active && licenseStatus.is_licensed) ? 'border-brand-500/30 hover:shadow-[0_0_15px_rgba(59,130,246,0.2)]' : 'border-slate-800 opacity-70 hover:opacity-100'">
+                                    
+                                    <div class="absolute inset-0 bg-gradient-to-br opacity-50" 
+                                         :class="(mod.active && licenseStatus.is_licensed) ? 'from-brand-500/10 to-transparent' : 'from-slate-800/20 to-transparent'"></div>
+                                    
+                                    <div class="relative flex flex-col h-full">
+                                        <div class="flex justify-between items-start mb-4">
+                                            <div class="w-12 h-12 rounded-xl border flex items-center justify-center text-xl shadow-lg"
+                                                 :class="(mod.active && licenseStatus.is_licensed) ? 'bg-brand-500/20 border-brand-500/30 text-brand-500' : 'bg-slate-800 border-slate-700 text-slate-400'">
+                                                <i class="fa-solid" :class="mod.icon"></i>
+                                            </div>
+                                            <span class="px-2.5 py-1 text-[10px] font-bold uppercase rounded-full border"
+                                                  :class="(mod.active && licenseStatus.is_licensed) ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-slate-800 text-slate-500 border-slate-700'"
+                                                  x-text="(mod.active && licenseStatus.is_licensed) ? 'Aktif' : 'Lisans Yok'"></span>
+                                        </div>
+                                        <h3 class="text-lg font-bold text-white mb-2" x-text="mod.name"></h3>
+                                        <p class="text-xs text-slate-400 mb-6 flex-1" x-text="mod.desc"></p>
+                                        
+                                        <!-- Buttons -->
+                                        <template x-if="mod.active && licenseStatus.is_licensed">
+                                            <button class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700 transition">Ayarları Yönet</button>
+                                        </template>
+                                        <template x-if="!mod.active || !licenseStatus.is_licensed">
+                                            <a href="https://discord.gg/ankaturkey" target="_blank" class="block w-full text-center py-2.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-bold rounded-lg transition shadow-lg shadow-brand-500/20">
+                                                Satın Alım İçin Ulaş
+                                            </a>
+                                        </template>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- WISECP TAB -->
+                    <div x-show="activeTab === 'wisecp'" x-cloak class="space-y-6">
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <!-- Left: Setup and code -->
+                            <div class="lg:col-span-2 corp-card rounded-lg p-5 space-y-4">
+                                <div class="flex justify-between items-center">
+                                    <h2 class="text-xs font-bold uppercase text-white flex items-center space-x-1.5">
+                                        <i class="fa-solid fa-square-rss text-brand-500"></i>
+                                        <span>WiseCP & WHMCS Otomasyon Modülü</span>
+                                    </h2>
+                                    <button @click="showWiseCpSimulateModal = true" class="btn-primary text-xs font-semibold py-1.5 px-3 rounded">Sipariş Simülatörü Aç</button>
+                                </div>
+                                <p class="text-xs text-slate-400 font-sans">Otomatik VM dağıtımı (Deployment) ve VDS kontrol modülünün PHP dosyalarını aşağıdaki dizine kurarak faturalandırmayı entegre edebilirsiniz:</p>
+                                <div class="bg-slate-900 p-2 rounded border border-slate-800 font-mono text-[10px] text-brand-500">/cpanel/modules/Servers/AnkaVM/AnkaVM.php</div>
+                                <div class="flex justify-between items-center"><span class="text-[10px] text-slate-500">Modül Kod Bloğu:</span><button @click="navigator.clipboard.writeText(document.getElementById('php-module-code').innerText); showToast('WiseCP Modül Kodu kopyalandı!', 'success')" class="px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-[10px] text-brand-500">Kopyala</button></div>
+                                <pre class="bg-slate-950 p-3 rounded border border-slate-800 font-mono text-[10px] max-h-48 overflow-y-auto text-slate-300" id="php-module-code">
+&lt;?php
+class AnkaVM {
+    private $apiUrl = "http://your-server-ip:8086";
+    private $apiKey = "ankavm-secure-dev-token-2026";
+    
+    private function call($endpoint, $method, $data) {
+        $ch = curl_init($this->apiUrl . $endpoint);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json',
+            'X-API-Key: ' . $this->apiKey
+        ]);
+        return json_decode(curl_exec($ch), true);
+    }
+    
+    public function createServer($params) {
+        return $this->call('/api/wisecp/deploy', 'POST', [
+            'order_id' => $params['order_id'],
+            'product_id' => $params['product_id'],
+            'name' => $params['hostname'], 
+            'cpu' => $params['config']['cpu'], 
+            'ram_mb' => $params['config']['ram'], 
+            'disk_gb' => $params['config']['disk'],
+            'disk_pool' => 'default-dir',
+            'os_template' => $params['config']['os'],
+            'callback_url' => 'http://yoursite.com/wisecp_callback.php'
+        ]);
+    }
+
+    public function suspendServer($params) {
+        return $this->call('/api/wisecp/suspend', 'POST', ['order_id' => $params['order_id']]);
+    }
+
+    public function unsuspendServer($params) {
+        return $this->call('/api/wisecp/unsuspend', 'POST', ['order_id' => $params['order_id']]);
+    }
+
+    public function terminateServer($params) {
+        return $this->call('/api/wisecp/terminate', 'POST', ['order_id' => $params['order_id']]);
+    }
+
+    public function rebootServer($params) {
+        return $this->call('/api/wisecp/reboot', 'POST', ['order_id' => $params['order_id']]);
+    }
+}</pre>
+                            </div>
+
+                            <!-- Right: WiseCP Orders list -->
+                            <div class="corp-card rounded-lg p-5 space-y-4">
+                                <h3 class="text-xs font-bold uppercase text-white flex items-center space-x-1.5">
+                                    <i class="fa-solid fa-list-check text-emerald-400"></i>
+                                    <span>WiseCP Sipariş Geçmişi</span>
+                                </h3>
+                                <div class="space-y-3 max-h-96 overflow-y-auto font-mono text-[10px]">
+                                    <template x-for="order in wiseCpOrders" :key="order.order_id">
+                                        <div class="p-3 bg-slate-900/60 rounded border border-slate-800 space-y-2">
+                                            <div class="flex justify-between items-center font-bold">
+                                                <span x-text="order.order_id" class="text-white"></span>
+                                                <span :class="{
+                                                    'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30': order.status === 'COMPLETED',
+                                                    'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse': order.status === 'PROVISIONING',
+                                                    'bg-red-500/20 text-red-400 border border-red-500/30': order.status === 'FAILED'
+                                                }" class="px-1.5 py-0.5 rounded text-[8px] font-bold" x-text="order.status"></span>
+                                            </div>
+                                            <div class="space-y-0.5 text-slate-400 text-[9px]">
+                                                <div x-text="`VDS Adı: ${order.name}`"></div>
+                                                <div x-text="`Ürün ID: ${order.product_id}`"></div>
+                                                <div x-text="`CPU: ${order.cpu} / RAM: ${order.ram_mb}MB / Disk: ${order.disk_gb}G`"></div>
+                                                <div x-show="order.ip_address" x-text="`Atanan IP: ${order.ip_address}`" class="text-brand-500 font-bold"></div>
+                                                <div x-show="order.error" x-text="`Hata: ${order.error}`" class="text-red-400 font-bold"></div>
+                                            </div>
+                                            <div class="text-[8px] text-slate-500 text-right" x-text="order.created_at"></div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Create VM Wizard Modal -->
+    <div x-show="showCreateModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div @click.away="showCreateModal = false" class="corp-card w-full max-w-2xl rounded-2xl overflow-hidden p-0 flex flex-col shadow-2xl border border-slate-700/50">
+            <!-- Header -->
+            <div class="p-5 border-b border-slate-800 bg-slate-900 flex justify-between items-center">
+                <h2 class="text-sm font-bold text-white flex items-center space-x-2">
+                    <i class="fa-solid fa-wand-magic-sparkles text-brand-500"></i>
+                    <span>Yeni VDS Sihirbazı (Zero-Touch Provisioning)</span>
+                </h2>
+                <button @click="showCreateModal = false" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            
+            <!-- Progress Bar -->
+            <div class="flex items-center p-5 bg-[#0f1523]">
+                <template x-for="step in [1, 2, 3, 4]">
+                    <div class="flex-1 flex items-center">
+                        <div class="w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs transition-colors duration-300"
+                             :class="wizardStep >= step ? 'bg-brand-500 text-white shadow-[0_0_10px_rgba(59,130,246,0.5)]' : 'bg-slate-800 text-slate-500'">
+                            <span x-text="step"></span>
+                        </div>
+                        <div x-show="step < 4" class="flex-1 h-1 mx-2 rounded transition-colors duration-300"
+                             :class="wizardStep > step ? 'bg-brand-500' : 'bg-slate-800'"></div>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Content -->
+            <div class="p-6 bg-[#111827] min-h-[350px]">
+                <!-- STEP 1: Image -->
+                <div x-show="wizardStep === 1" x-transition.opacity>
+                    <h3 class="text-white font-bold mb-4">Adım 1: İşletim Sistemi İmajı Seçin</h3>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <!-- Ubuntu -->
+                        <div @click="createForm.os_template = 'ubuntu-22.04'" class="p-4 rounded-xl border cursor-pointer text-center transition group"
+                             :class="createForm.os_template === 'ubuntu-22.04' ? 'bg-brand-500/20 border-brand-500' : 'bg-slate-900 border-slate-700 hover:border-slate-500'">
+                            <i class="fa-brands fa-ubuntu text-4xl mb-2" :class="createForm.os_template === 'ubuntu-22.04' ? 'text-brand-400' : 'text-slate-400'"></i>
+                            <div class="text-xs font-bold text-white">Ubuntu 22.04</div>
+                        </div>
+                        <!-- Debian -->
+                        <div @click="createForm.os_template = 'debian-12'" class="p-4 rounded-xl border cursor-pointer text-center transition group"
+                             :class="createForm.os_template === 'debian-12' ? 'bg-brand-500/20 border-brand-500' : 'bg-slate-900 border-slate-700 hover:border-slate-500'">
+                            <i class="fa-brands fa-linux text-4xl mb-2" :class="createForm.os_template === 'debian-12' ? 'text-brand-400' : 'text-slate-400'"></i>
+                            <div class="text-xs font-bold text-white">Debian 12</div>
+                        </div>
+                        <!-- Windows 2019 -->
+                        <div @click="createForm.os_template = 'win2019'" class="p-4 rounded-xl border cursor-pointer text-center transition group"
+                             :class="createForm.os_template === 'win2019' ? 'bg-blue-500/20 border-blue-500' : 'bg-slate-900 border-slate-700 hover:border-slate-500'">
+                            <i class="fa-brands fa-windows text-4xl mb-2" :class="createForm.os_template === 'win2019' ? 'text-blue-400' : 'text-slate-400'"></i>
+                            <div class="text-xs font-bold text-white">Win 2019 Server</div>
+                        </div>
+                        <!-- Windows 2022 -->
+                        <div @click="createForm.os_template = 'win2022'" class="p-4 rounded-xl border cursor-pointer text-center transition group"
+                             :class="createForm.os_template === 'win2022' ? 'bg-blue-500/20 border-blue-500' : 'bg-slate-900 border-slate-700 hover:border-slate-500'">
+                            <i class="fa-brands fa-windows text-4xl mb-2" :class="createForm.os_template === 'win2022' ? 'text-blue-400' : 'text-slate-400'"></i>
+                            <div class="text-xs font-bold text-white">Win 2022 Server</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- STEP 2: Resources -->
+                <div x-show="wizardStep === 2" x-transition.opacity>
+                    <h3 class="text-white font-bold mb-4">Adım 2: Kaynakları Belirleyin</h3>
+                    <div class="space-y-6">
+                        <!-- Hostname -->
+                        <div>
+                            <label class="text-xs text-slate-400 block mb-1">Sunucu Adı (Hostname):</label>
+                            <input type="text" x-model="createForm.name" placeholder="Örn: srv-web-01" class="w-full p-3 bg-slate-900 border border-slate-700 rounded-lg text-white focus:outline-none focus:border-brand-500"/>
+                        </div>
+                        <div class="grid grid-cols-2 gap-6">
+                            <!-- CPU -->
+                            <div>
+                                <label class="text-xs text-slate-400 block mb-1">CPU Çekirdek Sayısı: <span class="text-brand-400 font-bold" x-text="createForm.cpu + ' Core'"></span></label>
+                                <input type="range" min="1" max="16" step="1" x-model.number="createForm.cpu" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-brand-500"/>
+                            </div>
+                            <!-- RAM -->
+                            <div>
+                                <label class="text-xs text-slate-400 block mb-1">RAM Miktarı: <span class="text-brand-400 font-bold" x-text="(createForm.ram_mb / 1024) + ' GB'"></span></label>
+                                <input type="range" min="1024" max="32768" step="1024" x-model.number="createForm.ram_mb" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-brand-500"/>
+                            </div>
+                        </div>
+                        <!-- Disk and Pool -->
+                        <div class="grid grid-cols-2 gap-6">
+                            <div>
+                                <label class="text-xs text-slate-400 block mb-1">Disk Boyutu: <span class="text-brand-400 font-bold" x-text="createForm.disk_gb + ' GB'"></span></label>
+                                <input type="range" min="10" max="500" step="10" x-model.number="createForm.disk_gb" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-brand-500"/>
+                            </div>
+                            <div>
+                                <label class="text-xs text-slate-400 block mb-1">Storage Pool:</label>
+                                <select x-model="createForm.disk_pool" class="w-full p-2 bg-slate-900 border border-slate-700 rounded-lg text-white focus:outline-none focus:border-brand-500">
+                                    <template x-for="pool in storagePools">
+                                        <option :value="pool.name" x-text="`${pool.name} (${pool.pool_type})`"></option>
+                                    </template>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- STEP 3: Network & Security -->
+                <div x-show="wizardStep === 3" x-transition.opacity>
+                    <h3 class="text-white font-bold mb-4">Adım 3: Güvenlik & Ağ</h3>
+                    <div class="space-y-4">
+                        <div class="bg-brand-500/10 border border-brand-500/20 p-4 rounded-xl flex items-start space-x-3">
+                            <i class="fa-solid fa-circle-info text-brand-400 mt-0.5"></i>
+                            <div class="text-xs text-slate-300">IP adresi IPAM havuzundan (otomatik) atanacaktır. Zero-Touch Provisioning ile Windows şifreniz (Autounattend.xml) ve Linux konfigürasyonunuz (Cloud-Init) boot anında otomatik gömülecektir.</div>
+                        </div>
+                        <div>
+                            <label class="text-xs text-slate-400 block mb-1">Kök/Administrator Şifresi:</label>
+                            <input type="text" x-model="createForm.root_password" class="w-full p-3 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono focus:outline-none focus:border-brand-500"/>
+                        </div>
+                        <div>
+                            <label class="text-xs text-slate-400 block mb-1">SSH Key (Opsiyonel - Sadece Linux):</label>
+                            <textarea x-model="createForm.ssh_key" placeholder="ssh-rsa AAAAB3NzaC1..." class="w-full p-3 bg-slate-900 border border-slate-700 rounded-lg text-[10px] text-white focus:outline-none focus:border-brand-500 font-mono" rows="3"></textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- STEP 4: Confirm -->
+                <div x-show="wizardStep === 4" x-transition.opacity>
+                    <h3 class="text-white font-bold mb-4">Adım 4: Kurulum Onayı</h3>
+                    <div class="bg-slate-900 rounded-xl p-6 border border-slate-800 space-y-4 text-sm text-slate-300">
+                        <div class="flex justify-between border-b border-slate-800 pb-2">
+                            <span class="text-slate-500">Hostname:</span>
+                            <span class="text-white font-bold" x-text="createForm.name"></span>
+                        </div>
+                        <div class="flex justify-between border-b border-slate-800 pb-2">
+                            <span class="text-slate-500">İşletim Sistemi:</span>
+                            <span class="text-white font-bold" x-text="createForm.os_template"></span>
+                        </div>
+                        <div class="flex justify-between border-b border-slate-800 pb-2">
+                            <span class="text-slate-500">Kaynaklar:</span>
+                            <span class="text-white font-bold" x-text="`${createForm.cpu} Core / ${createForm.ram_mb} MB RAM / ${createForm.disk_gb} GB Disk`"></span>
+                        </div>
+                        <div class="flex justify-between border-b border-slate-800 pb-2">
+                            <span class="text-slate-500">Storage Pool:</span>
+                            <span class="text-white font-bold" x-text="createForm.disk_pool"></span>
+                        </div>
+                        <div class="flex justify-between pb-2">
+                            <span class="text-slate-500">IP Adresi:</span>
+                            <span class="text-brand-400 font-bold">Auto (IPAM)</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer Buttons -->
+            <div class="p-5 border-t border-slate-800 bg-[#0f1523] flex justify-between">
+                <button type="button" @click="if(wizardStep > 1) wizardStep--" class="px-5 py-2 text-slate-400 hover:text-white transition font-bold text-sm" :class="wizardStep === 1 ? 'invisible' : ''">Geri</button>
+                
+                <template x-if="wizardStep < 4">
+                    <button type="button" @click="wizardStep++" class="btn-primary px-6 py-2 rounded-lg font-bold text-sm">İleri</button>
+                </template>
+                <template x-if="wizardStep === 4">
+                    <button type="button" @click="provisionVm(); showCreateModal = false" class="bg-emerald-500 hover:bg-emerald-600 text-white shadow-[0_0_15px_rgba(16,185,129,0.3)] px-6 py-2 rounded-lg font-bold text-sm transition">Otomatik Kurulumu Başlat</button>
+                </template>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create IPAM Pool Modal -->
+    <div x-show="showCreatePoolModal" class="fixed inset-0 bg-black/75 z-50 flex items-center justify-center p-4">
+        <div @click.away="showCreatePoolModal = false" class="corp-card w-full max-w-md rounded-lg p-5 space-y-4">
+            <h2 class="text-xs font-bold text-white">YENİ IPAM HAVUZU EKLE</h2>
+            <form @submit.prevent="provisionIpPool" class="space-y-3 font-mono text-xs">
+                <input type="text" x-model="createPoolForm.name" required placeholder="Havuz adı" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
+                <input type="text" x-model="createPoolForm.cidr" required placeholder="Ağ (Örn: 192.168.100.0/24)" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
+                <input type="text" x-model="createPoolForm.gateway" required placeholder="Ağ Geçidi" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
+                <div class="flex justify-end space-x-2">
+                    <button type="button" @click="showCreatePoolModal = false" class="px-3 py-1.5 text-slate-400 font-sans">İptal</button>
+                    <button type="submit" class="btn-primary px-4 py-1.5 rounded">Ekle</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- WiseCP Simulation Modal -->
+    <div x-show="showWiseCpSimulateModal" class="fixed inset-0 bg-black/75 z-50 flex items-center justify-center p-4">
+        <div @click.away="showWiseCpSimulateModal = false" class="corp-card w-full max-w-md rounded-lg overflow-hidden p-5 space-y-4 bg-[#111827] border border-slate-800">
+            <h2 class="text-xs font-bold text-white uppercase tracking-wider flex items-center space-x-1.5">
+                <i class="fa-solid fa-flask text-amber-500"></i>
+                <span>WiseCP Sipariş Simülatörü</span>
+            </h2>
+            <p class="text-[11px] text-slate-400 font-sans leading-relaxed">Bu arayüz, WiseCP modülünün API aracılığıyla hypervisor düğümünüze göndereceği "Yeni Sunucu Oluştur" (CreateServer) çağrısını birebir simüle etmenizi sağlar.</p>
+            <form @submit.prevent="simulateWiseCpOrder" class="space-y-3 font-mono text-xs">
+                <div class="space-y-1">
+                    <label class="text-[9px] text-slate-500 uppercase">Sipariş ID (Boş bırakılırsa otomatik üretilir):</label>
+                    <input type="text" x-model="wiseCpSimulateForm.order_id" placeholder="Örn: ws-order-9823" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white focus:outline-none focus:border-brand-500"/>
+                </div>
+                <div class="space-y-1">
+                    <label class="text-[9px] text-slate-500 uppercase">Sunucu Adı (Hostname):</label>
+                    <input type="text" x-model="wiseCpSimulateForm.name" required placeholder="Sunucu adı" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white focus:outline-none focus:border-brand-500"/>
+                </div>
+                <div class="space-y-1">
+                    <label class="text-[9px] text-slate-500 uppercase">İşletim Sistemi Şablonu:</label>
+                    <select x-model="wiseCpSimulateForm.os_template" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-mono focus:outline-none focus:border-brand-500">
+                        <option value="ubuntu-22.04">Ubuntu 22.04 LTS</option>
+                        <option value="debian-12">Debian 12 Bookworm</option>
+                    </select>
+                </div>
+                <div class="grid grid-cols-3 gap-2">
+                    <div class="space-y-1">
+                        <label class="text-[9px] text-slate-500 uppercase">CPU:</label>
+                        <select x-model.number="wiseCpSimulateForm.cpu" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-mono focus:outline-none focus:border-brand-500">
+                            <option value="1">1 Core</option>
+                            <option value="2">2 Cores</option>
+                            <option value="4">4 Cores</option>
+                        </select>
+                    </div>
+                    <div class="space-y-1">
+                        <label class="text-[9px] text-slate-500 uppercase">RAM:</label>
+                        <select x-model.number="wiseCpSimulateForm.ram_mb" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-mono focus:outline-none focus:border-brand-500">
+                            <option value="1024">1 GB</option>
+                            <option value="2048">2 GB</option>
+                            <option value="4096">4 GB</option>
+                            <option value="8192">8 GB</option>
+                        </select>
+                    </div>
+                    <div class="space-y-1">
+                        <label class="text-[9px] text-slate-500 uppercase">Disk:</label>
+                        <select x-model.number="wiseCpSimulateForm.disk_gb" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-mono focus:outline-none focus:border-brand-500">
+                            <option value="20">20 GB</option>
+                            <option value="40">40 GB</option>
+                            <option value="80">80 GB</option>
+                            <option value="160">160 GB</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="space-y-1">
+                    <label class="text-[9px] text-slate-500 uppercase">Kök Şifresi (Root Password):</label>
+                    <input type="text" x-model="wiseCpSimulateForm.root_password" required placeholder="Geçici Şifre" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white focus:outline-none focus:border-brand-500"/>
+                </div>
+                <div class="flex justify-end space-x-2 pt-2">
+                    <button type="button" @click="showWiseCpSimulateModal = false" class="px-3 py-1.5 text-slate-400 font-sans">İptal</button>
+                    <button type="submit" class="btn-primary px-4 py-1.5 rounded font-sans font-bold text-white">API Siparişini Tetikle</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Terminal & VNC Modal -->
+    <div x-show="showConsoleModal" class="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4">
+        <div class="corp-card w-full max-w-3xl rounded-xl overflow-hidden shadow-2xl border border-slate-800" @click.away="closeConsole()">
+            <!-- Tab Headers -->
+            <div class="border-b border-slate-800 bg-[#111827] px-4 py-2 flex justify-between items-center">
+                <div class="flex space-x-2 text-xs font-semibold">
+                    <button @click="consoleTab = 'vnc'; startVncSimulation(selectedVmName)" 
+                            :class="consoleTab === 'vnc' ? 'bg-brand-500/20 text-brand-400 border border-brand-500/30' : 'text-slate-400 hover:text-white'" 
+                            class="px-3 py-1.5 rounded transition flex items-center space-x-1">
+                        <i class="fa-solid fa-desktop"></i>
+                        <span>Web VNC Ekranı (Grafik)</span>
+                    </button>
+                    <button @click="consoleTab = 'serial'; $nextTick(() => initTerminal(selectedVmName))" 
+                            :class="consoleTab === 'serial' ? 'bg-brand-500/20 text-brand-400 border border-brand-500/30' : 'text-slate-400 hover:text-white'" 
+                            class="px-3 py-1.5 rounded transition flex items-center space-x-1">
+                        <i class="fa-solid fa-terminal"></i>
+                        <span>Seri Konsol (SSH)</span>
+                    </button>
+                </div>
+                <button @click="closeConsole()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-sm"></i></button>
+            </div>
+            
+            <!-- VNC Simulation Panel -->
+            <div x-show="consoleTab === 'vnc'" class="p-6 bg-[#070a13] space-y-4">
+                <div class="flex justify-between items-center text-xs">
+                    <div class="text-slate-500 font-mono" x-text="`VNC Adresi: ws://${window.location.host}/ws/vms/${selectedVmName}/vnc`"></div>
+                    <div class="flex space-x-2">
+                        <button @click="sendCtrlAltDel(selectedVmName)" class="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:bg-slate-800 text-[10px] text-brand-400 font-mono rounded font-bold">Ctrl+Alt+Del Gönder</button>
+                        <button @click="triggerAction(selectedVmName, 'restart'); startVncSimulation(selectedVmName)" class="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:bg-slate-800 text-[10px] text-amber-500 font-mono rounded font-bold">Sert Yeniden Başlat</button>
+                    </div>
+                </div>
+                
+                <!-- Display Mock screen output -->
+                <div class="relative w-full aspect-video max-w-full bg-black rounded-lg border border-slate-800/80 overflow-hidden flex flex-col p-4 font-mono text-xs text-brand-500 leading-relaxed overflow-y-auto max-h-96 select-text whitespace-pre-wrap">
+                    <!-- Boot sequence content -->
+                    <div class="flex-1" x-text="vncCanvasContent"></div>
+                </div>
+            </div>
+
+            <!-- Serial Console xterm -->
+            <div x-show="consoleTab === 'serial'" class="p-4 bg-[#070a13]">
+                <div id="terminal-container" class="w-full"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toaststack -->
+    <div class="fixed bottom-5 right-5 space-y-2 z-50 max-w-xs w-full">
+        <template x-for="toast in toasts" :key="toast.id">
+            <div :class="{'border-l-brand-500 text-brand-500': toast.type === 'info', 'border-l-emerald-500 text-emerald-400': toast.type === 'success', 'border-l-red-500 text-red-400': toast.type !== 'info' && toast.type !== 'success'}" class="corp-card p-3 rounded flex justify-between items-start bg-[#111827]/95 border-l-4 border-slate-800 text-xs">
+                <span x-text="toast.message" class="font-sans"></span>
+                <button @click="removeToast(toast.id)" class="text-slate-500"><i class="fa-solid fa-xmark text-[9px]"></i></button>
+            </div>
+        </template>
+    </div>
+
+</body>
 </html>
