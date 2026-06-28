@@ -33,17 +33,18 @@ replace_block("c:/Users/Administrator/Desktop/ankavm2-main/backend/models.py", "
 replace_block("c:/Users/Administrator/Desktop/ankavm2-main/frontend/app.js", "frontend/app.js")
 replace_block("c:/Users/Administrator/Desktop/ankavm2-main/frontend/index.html", "frontend/index.html")
 
-# New files
-replace_block("c:/Users/Administrator/Desktop/ankavm2-main/backend/routers_vcenter.py", "backend/routers_vcenter.py")
-replace_block("c:/Users/Administrator/Desktop/ankavm2-main/backend/routers_images.py", "backend/routers_images.py")
-replace_block("c:/Users/Administrator/Desktop/ankavm2-main/backend/routers_wisecp.py", "backend/routers_wisecp.py")
+import glob
 
-# Create __init__.py if missing
-init_path = "c:/Users/Administrator/Desktop/ankavm2-main/backend/__init__.py"
-if not os.path.exists(init_path):
-    with open(init_path, "w") as f:
-        f.write("# Initialize backend package\n")
-replace_block(init_path, "backend/__init__.py")
+# Process all backend files
+for file_path in glob.glob("c:/Users/Administrator/Desktop/ankavm2-main/backend/*.py"):
+    filename = os.path.basename(file_path)
+    replace_block(file_path, f"backend/{filename}")
+
+# Also process frontend files
+replace_block("c:/Users/Administrator/Desktop/ankavm2-main/frontend/app.js", "frontend/app.js")
+replace_block("c:/Users/Administrator/Desktop/ankavm2-main/frontend/index.html", "frontend/index.html")
+
+# Create __init__.py if missing (handled by the glob loop now if it exists locally)
 
 # Also add pyvmomi to requirements.txt
 req_pattern = re.compile(r"(cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/requirements\.txt.*?)(_ANKAVM_EOF_)", re.DOTALL)

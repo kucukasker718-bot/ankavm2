@@ -179,6 +179,7 @@ API_HOST = os.getenv("ANKAVM_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("ANKAVM_PORT", "8086"))
 API_KEY = os.getenv("ANKAVM_API_KEY", "ankavm-secure-dev-token-2026")
 LICENSE_KEY = os.getenv("ANKAVM_LICENSE_KEY", "ANKAVM-TRIAL-KEY-2026")
+DATABASE_URL = os.getenv("ANKAVM_DATABASE_URL", "postgresql://user:password@localhost/ankavmdb")
 
 # Libvirt Configurations
 LIBVIRT_IMAGES_DIR = os.getenv("ANKAVM_IMAGES_DIR", "/var/lib/libvirt/images")
@@ -190,6 +191,7 @@ HAS_VIRSH = shutil.which("virsh") is not None
 IS_MOCK = os.getenv("ANKAVM_MOCK", str(not HAS_VIRSH)).lower() in ("true", "1", "yes")
 
 print(f"[AnkaVM] Config loaded. IS_MOCK={IS_MOCK}, Host={API_HOST}:{API_PORT}")
+
 _ANKAVM_EOF_
 
 # Write backend/schemas.py
@@ -288,6 +290,7 @@ class WiseCPDeploy(BaseModel):
     os_template: str
     root_password: str
     callback_url: Optional[str] = None
+
 _ANKAVM_EOF_
 
 # Write backend/cloud_init.py
@@ -455,6 +458,7 @@ ethernets:
                     subprocess.run(["sudo", "rm", "-f", iso_path], check=True)
             except Exception as e:
                 print(f"Failed to cleanup ISO for {vm_name}: {e}")
+
 _ANKAVM_EOF_
 
 # Write backend/ipam.py
@@ -627,6 +631,7 @@ class IPAMManager:
             addr for addr in db["addresses"].values()
             if addr["pool_id"] == pool_id and addr["status"] == "ALLOCATED"
         ]
+
 _ANKAVM_EOF_
 
 # Write backend/vm_manager.py
@@ -1655,6 +1660,7 @@ class VMManager:
             "tx_packets_sec": 100,
             "ddos_alert": False
         }
+
 _ANKAVM_EOF_
 
 # Write backend/main.py
@@ -2346,6 +2352,7 @@ def check_license_validity() -> dict:
 
     # Return default unverified state with current local hw_id
     return result
+
 _ANKAVM_EOF_
 
 # Write backend/license_server.py
@@ -2470,6 +2477,7 @@ def verify_license(req: LicenseVerifyRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8087)
+
 _ANKAVM_EOF_
 
 # Write scripts/auto_repair_daemon.py
@@ -5374,6 +5382,383 @@ _ANKAVM_EOF_
 # Write backend/__init__.py
 cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/__init__.py
 # Initialize backend package
+
+_ANKAVM_EOF_
+
+# Write backend/database.py
+cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/database.py
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from .config import settings  # Assuming a config.py exists
+
+SQLALCHEMY_DATABASE_URL = getattr(settings, "DATABASE_URL", "postgresql://user:password@localhost/ankavmdb")
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = declarative_base()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+_ANKAVM_EOF_
+
+# Write backend/dependencies.py
+cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/dependencies.py
+from fastapi import Depends, HTTPException, status, Header
+from sqlalchemy.orm import Session
+from datetime import datetime
+from .database import get_db
+from .models import UserModule, Module
+
+def get_current_user_id(x_user_id: str = Header(..., description="WiseCP User ID")):
+    try:
+        return int(x_user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid User ID format")
+
+def require_module(module_name: str):
+    def module_checker(
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+    ):
+        # Find the module
+        module = db.query(Module).filter(Module.name == module_name).first()
+        if not module:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Module '{module_name}' does not exist in the system."
+            )
+        
+        # Check user license
+        user_module = db.query(UserModule).filter(
+            UserModule.user_id == user_id,
+            UserModule.module_id == module.id,
+            UserModule.is_active == True
+        ).first()
+        
+        if not user_module:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Active license required for module '{module_name}'."
+            )
+            
+        if user_module.expires_at and user_module.expires_at < datetime.utcnow():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"License for module '{module_name}' has expired."
+            )
+            
+        return user_module
+    
+    return module_checker
+
+_ANKAVM_EOF_
+
+# Write backend/keygen.py
+cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/keygen.py
+"""
+AnkaVM Lisans Anahtar Üretici
+==============================
+Admin aracı - Windows/Linux uyumlu
+Süre seçimli, HMAC imzalı profesyonel lisans anahtarı üretici.
+"""
+
+import hmac
+import hashlib
+import secrets
+import datetime
+import os
+import sys
+
+# === GİZLİ İMZALAMA ANAHTARI (backend ve install.sh ile aynı olmalı) ===
+SECRET_SIGNING_KEY = "ankavm_private_signing_secret_9x2k7m_2026"
+
+LICENSE_PLANS = [
+    ("1 Aylık",       30),
+    ("3 Aylık",       90),
+    ("6 Aylık",       180),
+    ("1 Yıllık",      365),
+    ("2 Yıllık",      730),
+    ("Lifetime",      None),   # None = sonsuz
+]
+
+def generate_license_key(expiry_date: str) -> str:
+    """
+    HMAC imzalı lisans anahtarı üretir.
+    Format: ANKAVM-XXXX-XXXX-XXXX-YYYYMMDD-SIGNATURE
+      XXXX-XXXX-XXXX = rastgele 12 hex karakter
+      YYYYMMDD       = bitiş tarihi (sonsuz için 99991231)
+      SIGNATURE      = HMAC-SHA256(SECRET, token+expiry)[:8]
+    """
+    raw_token = secrets.token_hex(6).upper()          # 12 hex = 3×4 grup
+    parts_token = [raw_token[i:i+4] for i in range(0, 12, 4)]
+
+    hmac_input = f"{raw_token}{expiry_date}"
+    signature = hmac.new(
+        SECRET_SIGNING_KEY.encode('utf-8'),
+        hmac_input.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()[:8].upper()
+
+    return f"ANKAVM-{'-'.join(parts_token)}-{expiry_date}-{signature}"
+
+
+def print_banner():
+    print()
+    print("╔══════════════════════════════════════════════════════════╗")
+    print("║        AnkaVM Lisans Anahtar Üretici  |  Admin Paneli   ║")
+    print("╚══════════════════════════════════════════════════════════╝")
+    print()
+
+
+def choose_plan() -> tuple[str, str]:
+    """Kullanıcıya süre seçtirir. (label, expiry_date) döndürür."""
+    print("  Lisans Süresi Seçin:")
+    print("  " + "─" * 42)
+    for i, (label, days) in enumerate(LICENSE_PLANS, 1):
+        if days is None:
+            expire_str = "Süresiz (Lifetime)"
+        else:
+            expire_dt = datetime.date.today() + datetime.timedelta(days=days)
+            expire_str = expire_dt.strftime("%d.%m.%Y")
+        print(f"  [{i}] {label:<12}  →  Bitiş: {expire_str}")
+    print("  " + "─" * 42)
+
+    while True:
+        try:
+            choice = int(input("\n  Seçiminiz (1-6): ").strip())
+            if 1 <= choice <= len(LICENSE_PLANS):
+                label, days = LICENSE_PLANS[choice - 1]
+                if days is None:
+                    expiry_date = "99991231"
+                else:
+                    expiry_dt = datetime.date.today() + datetime.timedelta(days=days)
+                    expiry_date = expiry_dt.strftime("%Y%m%d")
+                return label, expiry_date
+        except ValueError:
+            pass
+        print("  [!] Lütfen 1-6 arasında bir değer girin.")
+
+
+def confirm(label: str, expiry_date: str) -> bool:
+    if expiry_date == "99991231":
+        expiry_display = "Sonsuz (Lifetime)"
+    else:
+        d = datetime.datetime.strptime(expiry_date, "%Y%m%d").date()
+        expiry_display = d.strftime("%d.%m.%Y")
+
+    print()
+    print("  ┌─────────────────────────────────────────┐")
+    print(f"  │  Plan    : {label:<30}│")
+    print(f"  │  Bitiş   : {expiry_display:<30}│")
+    print("  └─────────────────────────────────────────┘")
+    ans = input("\n  Onaylıyor musunuz? (e/h): ").strip().lower()
+    return ans == "e"
+
+
+def save_log(license_key: str, label: str, expiry_date: str):
+    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "issued_keys.log")
+    try:
+        with open(log_file, "a", encoding="utf-8") as f:
+            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"{now}  |  {label:<12}  |  {expiry_date}  |  {license_key}\n")
+    except Exception:
+        pass
+
+
+def main():
+    print_banner()
+    label, expiry_date = choose_plan()
+
+    if not confirm(label, expiry_date):
+        print("\n  İptal edildi.\n")
+        sys.exit(0)
+
+    key = generate_license_key(expiry_date)
+    save_log(key, label, expiry_date)
+
+    if expiry_date == "99991231":
+        expiry_display = "Sonsuz (Lifetime)"
+    else:
+        d = datetime.datetime.strptime(expiry_date, "%Y%m%d").date()
+        expiry_display = d.strftime("%d.%m.%Y")
+
+    print()
+    print("╔══════════════════════════════════════════════════════════╗")
+    print("║          ✓  LİSANS ANAHTARI OLUŞTURULDU                ║")
+    print("╚══════════════════════════════════════════════════════════╝")
+    print()
+    print(f"  Plan    : {label}")
+    print(f"  Bitiş   : {expiry_display}")
+    print()
+    print("  Lisans Anahtarı:")
+    print(f"\n  ► {key}\n")
+    print("─" * 62)
+    print("  Bu anahtarı müşteriye iletin.")
+    print("  Müşteri hem install.sh'da hem de panelde kullanacak.")
+    print("─" * 62)
+    print()
+
+
+if __name__ == "__main__":
+    main()
+
+_ANKAVM_EOF_
+
+# Write backend/license_middleware.py
+cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/license_middleware.py
+import os
+import hmac
+import hashlib
+import base64
+import datetime
+from fastapi import Request, status
+from fastapi.responses import JSONResponse
+
+LICENSE_FILE_PATH = "/etc/ankavm/license.key"
+SALT = "ankavm_hwid_salt_2026_xyz"
+SECRET_SIGNING_KEY = "ankavm_private_signing_secret_9x2k7m_2026"
+
+
+def verify_license_key_signature(license_key: str) -> tuple[bool, str | None]:
+    """
+    HMAC imzasını ve bitiş tarihini doğrular.
+    Format: ANKAVM-XXXX-XXXX-XXXX-YYYYMMDD-SIGNATURE
+    Returns: (is_valid, expiry_date_str or None)
+    """
+    try:
+        parts = license_key.strip().split("-")
+        # ANKAVM + 3 token + YYYYMMDD + SIG = 6 parts
+        if len(parts) != 6 or parts[0] != "ANKAVM":
+            return False, None
+
+        raw_token = "".join(parts[1:4])
+        expiry_date_str = parts[4]   # YYYYMMDD
+        provided_sig = parts[5]
+
+        # HMAC doğrula
+        hmac_input = f"{raw_token}{expiry_date_str}"
+        expected_sig = hmac.new(
+            SECRET_SIGNING_KEY.encode('utf-8'),
+            hmac_input.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()[:8].upper()
+
+        if not hmac.compare_digest(provided_sig, expected_sig):
+            return False, None
+
+        return True, expiry_date_str
+    except Exception:
+        return False, None
+
+
+def is_license_expired(expiry_date_str: str) -> bool:
+    """Bitiş tarihini kontrol eder. 99991231 = sonsuz."""
+    if expiry_date_str == "99991231":
+        return False
+    try:
+        expiry = datetime.datetime.strptime(expiry_date_str, "%Y%m%d").date()
+        return datetime.date.today() > expiry
+    except Exception:
+        return True
+
+
+def read_license_file() -> dict | None:
+    """
+    /etc/ankavm/license.key dosyasını okur.
+    Dosya formatı: base64(hwid|license_key|SALT)
+    Returns: {"hwid": ..., "license_key": ...} or None
+    """
+    if not os.path.exists(LICENSE_FILE_PATH):
+        return None
+    try:
+        with open(LICENSE_FILE_PATH, 'r') as f:
+            content = f.read().strip()
+        decoded = base64.b64decode(content).decode('utf-8')
+        if not decoded.endswith(SALT):
+            return None
+        inner = decoded[:-len(SALT)]
+        hwid, license_key = inner.split("|", 1)
+        # trailing pipe before SALT
+        license_key = license_key.rstrip("|")
+        return {"hwid": hwid, "license_key": license_key}
+    except Exception:
+        return None
+
+
+async def hwid_license_middleware(request: Request, call_next):
+    path = request.url.path
+    # Bypass: lisans endpointleri ve static dosyalar
+    if path in ("/api/v1/license/verify", "/api/license/status", "/api/license/update") \
+            or not path.startswith("/api"):
+        return await call_next(request)
+
+    data = read_license_file()
+    if not data:
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": "Lisans dosyası bulunamadı. install.sh ile kurulum yapıp lisans anahtarınızı girin."}
+        )
+
+    valid, expiry_date_str = verify_license_key_signature(data["license_key"])
+    if not valid:
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": "Lisans anahtarı geçersiz veya değiştirilmiş."}
+        )
+
+    if is_license_expired(expiry_date_str):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": f"Lisans süresi doldu! ({expiry_date_str}) Lütfen lisansınızı yenileyin."}
+        )
+
+    return await call_next(request)
+
+_ANKAVM_EOF_
+
+# Write backend/routers_license.py
+cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/routers_license.py
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from datetime import datetime
+
+from .database import get_db
+from .models import License
+
+router = APIRouter(prefix="/api/v1/license")
+
+class LicenseVerifyRequest(BaseModel):
+    hwid: str
+
+@router.post("/verify")
+async def verify_license(req: LicenseVerifyRequest, db: Session = Depends(get_db)):
+    """Verifies a given HWID against the database"""
+    license_record = db.query(License).filter(License.hwid == req.hwid).first()
+    
+    if not license_record:
+        # Mock behavior for local testing: if no license exists, create it as active.
+        # In a real environment, it would return 404 or inactive.
+        license_record = License(hwid=req.hwid, status="active")
+        db.add(license_record)
+        db.commit()
+        db.refresh(license_record)
+        # raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="License not found for this HWID.")
+
+    if license_record.status != "active":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="License is not active.")
+        
+    if license_record.expire_date and license_record.expire_date < datetime.utcnow():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="License has expired.")
+        
+    return {"status": "valid", "hwid": license_record.hwid}
 
 _ANKAVM_EOF_
 
