@@ -73,6 +73,8 @@ document.addEventListener('alpine:init', () => {
         showCreatePoolModal: false,
         showConsoleModal: false,
         showWiseCpSimulateModal: false,
+        showModuleSettingsModal: false,
+        selectedModule: null,
         licenseKeyInput: '',
         
         // VCenter State
@@ -86,10 +88,12 @@ document.addEventListener('alpine:init', () => {
         
         // Modules & Cloud Images State
         cloudImages: [
-            { name: 'Windows Server 2012 R2', url: 'http://iso.ankavm.net/win2012r2.iso', icon: 'fa-windows' },
-            { name: 'Windows Server 2016', url: 'http://iso.ankavm.net/win2016.iso', icon: 'fa-windows' },
-            { name: 'Windows Server 2019', url: 'http://iso.ankavm.net/win2019.iso', icon: 'fa-windows' },
-            { name: 'Ubuntu 22.04 LTS Server', url: 'http://iso.ankavm.net/ubuntu2204.iso', icon: 'fa-linux' }
+            { name: 'Ubuntu 22.04 LTS Server', url: 'https://releases.ubuntu.com/jammy/ubuntu-22.04.5-live-server-amd64.iso', icon: 'fa-linux' },
+            { name: 'Debian 12 Netinstall', url: 'https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-12.10.0-amd64-netinst.iso', icon: 'fa-linux' },
+            { name: 'Rocky Linux 9', url: 'https://download.rockylinux.org/pub/rocky/9/isos/x86_64/Rocky-9.5-x86_64-dvd.iso', icon: 'fa-server' },
+            { name: 'Windows Server 2019', url: 'https://software-download.microsoft.com/download/sg/17763.737.190906-2324.19h1_release_svc_refresh_SERVER_EVAL_x64FRE_en-us_1.iso', icon: 'fa-windows' },
+            { name: 'Windows Server 2022', url: 'https://software-download.microsoft.com/download/sg/20348.169.210729-1534.fe_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso', icon: 'fa-windows' },
+            { name: 'Windows Server 2012 R2', url: 'https://archive.org/download/WindowsServer2012R2Eval/9600.17050.WINBLUE_REFRESH.140317-1640_X64FRE_SERVER_EVAL_EN-US-IR3_SSS_X64FREE_EN-US_DV9.ISO', icon: 'fa-windows' }
         ],
         
         systemModules: [
@@ -246,6 +250,22 @@ document.addEventListener('alpine:init', () => {
                     this.initVmPerformanceChart();
                 });
             }
+        },
+
+        openModuleSettings(module) {
+            this.selectedModule = module;
+            this.showModuleSettingsModal = true;
+        },
+
+        closeModuleSettings() {
+            this.showModuleSettingsModal = false;
+            this.selectedModule = null;
+        },
+
+        saveModuleSettings() {
+            if (!this.selectedModule) return;
+            this.showToast(`${this.selectedModule.name} ayarları kaydedildi.`, 'success');
+            this.closeModuleSettings();
         },
 
         // --- Fetch actions ---

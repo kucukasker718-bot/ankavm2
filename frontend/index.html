@@ -772,7 +772,7 @@
                                         
                                         <!-- Buttons -->
                                         <template x-if="mod.active && licenseStatus.is_licensed">
-                                            <button class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700 transition">Ayarları Yönet</button>
+                                            <button @click="openModuleSettings(mod)" class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700 transition">Ayarları Yönet</button>
                                         </template>
                                         <template x-if="!mod.active || !licenseStatus.is_licensed">
                                             <a href="https://discord.gg/ankaturkey" target="_blank" class="block w-full text-center py-2.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-bold rounded-lg transition shadow-lg shadow-brand-500/20">
@@ -1123,6 +1123,48 @@ class AnkaVM {
                     <button type="submit" class="btn-primary px-4 py-1.5 rounded font-sans font-bold text-white">API Siparişini Tetikle</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Module Settings Modal -->
+    <div x-show="showModuleSettingsModal" x-cloak class="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+        <div class="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden" @click.away="closeModuleSettings()">
+            <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+                <div>
+                    <h3 class="text-sm font-bold text-white" x-text="selectedModule?.name || 'Modül Ayarları'"></h3>
+                    <p class="text-[11px] text-slate-400" x-text="selectedModule?.desc || 'Bu modülün ayarlarını yapılandırın.'"></p>
+                </div>
+                <button @click="closeModuleSettings()" class="text-slate-400 hover:text-white">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="p-5 space-y-4 text-sm">
+                <div class="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <span class="text-slate-300 font-semibold">Modül Durumu</span>
+                        <span class="px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 text-[10px] font-bold">Aktif</span>
+                    </div>
+                    <p class="text-[12px] text-slate-400">Bu bölüm, seçilen modül için temel yapılandırma ve yönetim ayarlarını sunar.</p>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <label class="rounded-xl border border-slate-800 bg-slate-950/70 p-3 flex items-center justify-between">
+                        <span class="text-slate-300 text-sm">Otomatik başlat</span>
+                        <input type="checkbox" checked class="accent-brand-500" />
+                    </label>
+                    <label class="rounded-xl border border-slate-800 bg-slate-950/70 p-3 flex items-center justify-between">
+                        <span class="text-slate-300 text-sm">Bildirimleri göster</span>
+                        <input type="checkbox" checked class="accent-brand-500" />
+                    </label>
+                </div>
+                <div class="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                    <label class="text-[10px] uppercase tracking-wider text-slate-500">Not / Açıklama</label>
+                    <textarea rows="3" class="w-full mt-2 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500" placeholder="Bu modül için ek not girin..."></textarea>
+                </div>
+            </div>
+            <div class="px-5 py-4 border-t border-slate-800 flex justify-end space-x-2">
+                <button @click="closeModuleSettings()" class="px-3 py-2 text-sm rounded-lg text-slate-400 hover:text-white">İptal</button>
+                <button @click="saveModuleSettings()" class="px-3 py-2 text-sm rounded-lg bg-brand-500 hover:bg-brand-600 text-white font-semibold">Kaydet</button>
+            </div>
         </div>
     </div>
 

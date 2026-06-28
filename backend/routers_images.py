@@ -1,8 +1,11 @@
 import os
+import re
 import shutil
+import urllib.request
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
 from sqlalchemy.orm import Session
-from backend.database import get_db
+from backend.database import get_db, SessionLocal
 from backend.models import Image, ImageStatus
 from pydantic import BaseModel
 from typing import List
@@ -41,8 +44,6 @@ def get_images(db: Session = Depends(get_db)):
         images = [default_img]
     return images
 
-import urllib.request
-
 # Global dictionary to track download progress
 DOWNLOAD_PROGRESS = {}
 
@@ -50,13 +51,28 @@ class ImageDownloadRequest(BaseModel):
     name: str
     url: str
 
+def derive_download_filename(name: str, url: str) -> str:
+    parsed = urlparse(url)
+    basename = os.path.basename(parsed.path)
+    if basename and "." in basename:
+        return basename
+
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip().lower()).strip("._-")
+    return f"{slug}.iso"
+
+
 def download_image_task(url: str, filename: str):
-    import os
     from backend.config import LIBVIRT_IMAGES_DIR
-    target_path = os.path.join(LIBVIRT_IMAGES_DIR, filename)
-    
+
+    target_dir = LIBVIRT_IMAGES_DIR or os.path.join(os.getcwd(), "storage_images")
+    os.makedirs(target_dir, exist_ok=True)
+    target_path = os.path.join(target_dir, filename)
+
     DOWNLOAD_PROGRESS[filename] = {"status": "downloading", "progress": 0}
-    
+
+    db = SessionLocal()
+    image = None
+
     def reporthook(blocknum, blocksize, totalsize):
         readsofar = blocknum * blocksize
         if totalsize > 0:
@@ -64,25 +80,43 @@ def download_image_task(url: str, filename: str):
             if percent > 100:
                 percent = 100
             DOWNLOAD_PROGRESS[filename]["progress"] = int(percent)
-    
+
     try:
+        image = db.query(Image).filter(Image.filename == filename).first()
+        if not image:
+            image = Image(name=filename, filename=filename, is_template=False, status=ImageStatus.SYNCING)
+            db.add(image)
+            db.commit()
+            db.refresh(image)
+        else:
+            image.status = ImageStatus.SYNCING
+            db.commit()
+
         urllib.request.urlretrieve(url, target_path, reporthook)
         DOWNLOAD_PROGRESS[filename]["status"] = "completed"
         DOWNLOAD_PROGRESS[filename]["progress"] = 100
+
+        if image:
+            image.status = ImageStatus.READY
+            db.commit()
+
         print(f"[Download Task] Success: {filename}")
     except Exception as e:
         DOWNLOAD_PROGRESS[filename]["status"] = "failed"
         DOWNLOAD_PROGRESS[filename]["error"] = str(e)
+        if image:
+            image.status = ImageStatus.FAILED
+            db.commit()
         print(f"[Download Task] Failed: {e}")
+    finally:
+        db.close()
 
 @router.post("/download")
 async def download_image(req: ImageDownloadRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    # Basic slugify
-    filename = req.name.lower().replace(" ", "_") + ".iso"
-    
-    # Send to background task so it doesn't block FastAPI
+    filename = derive_download_filename(req.name, req.url)
+
     background_tasks.add_task(download_image_task, req.url, filename)
-    
+
     return {"message": "Download started in background", "filename": filename}
 
 @router.get("/downloads")
