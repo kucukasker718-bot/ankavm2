@@ -145,6 +145,7 @@ ankavm ALL=(root) NOPASSWD: /sbin/lvremove *
 ankavm ALL=(root) NOPASSWD: /sbin/lvresize *
 ankavm ALL=(root) NOPASSWD: /sbin/zpool *
 ankavm ALL=(root) NOPASSWD: /sbin/zfs *
+ankavm ALL=(root) NOPASSWD: /usr/sbin/dmidecode *
 EOF
 chmod 0440 "$SUDOERS_FILE"
 echo -e "${GREEN}✓ Sudo wrapper limits written to $SUDOERS_FILE.${NC}\n"
@@ -1770,18 +1771,14 @@ def get_license_status():
         read_license_file, verify_license_key_signature,
         is_license_expired
     )
-    import subprocess
+    from backend.license_check import get_hardware_uuid
     import datetime
 
     data = read_license_file()
 
     if not data:
         try:
-            result = subprocess.run(
-                ["dmidecode", "-s", "system-uuid"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            )
-            hwid = result.stdout.strip() or "Alınamadı"
+            hwid = get_hardware_uuid()
         except Exception:
             hwid = "Alınamadı"
         return {
@@ -1860,11 +1857,8 @@ def update_license_key(payload: LicenseUpdatePayload):
 
     # 3. Sunucunun HWID'ini al
     try:
-        result = subprocess.run(
-            ["dmidecode", "-s", "system-uuid"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
-        )
-        hwid = result.stdout.strip()
+        from backend.license_check import get_hardware_uuid
+        hwid = get_hardware_uuid()
         if not hwid:
             raise ValueError("HWID boş döndü")
     except Exception as e:
@@ -3053,6 +3047,27 @@ document.addEventListener('alpine:init', () => {
         },
         vcenterDiscovery: [],
         
+        // Modules & Cloud Images State
+        cloudImages: [
+            { name: 'Windows Server 2012 R2', url: 'http://iso.ankavm.net/win2012r2.iso', icon: 'fa-windows' },
+            { name: 'Windows Server 2016', url: 'http://iso.ankavm.net/win2016.iso', icon: 'fa-windows' },
+            { name: 'Windows Server 2019', url: 'http://iso.ankavm.net/win2019.iso', icon: 'fa-windows' },
+            { name: 'Ubuntu 22.04 LTS Server', url: 'http://iso.ankavm.net/ubuntu2204.iso', icon: 'fa-linux' }
+        ],
+        
+        systemModules: [
+            { id: 'webconsole', name: 'Gelişmiş Web Console', desc: 'VCenter MKS protokolünü WebSockets üzerinden güvenli aktarır.', icon: 'fa-terminal', active: true },
+            { id: 'autopass', name: 'Otomatik Şifre Yönetimi (WiseCP)', desc: 'VM kurulumu sonrası OS şifrelerini otomatik sıfırlar ve müşteriye gösterir.', icon: 'fa-key', active: true },
+            { id: 'osselect', name: 'İşletim Sistemi Seçme (Auto)', desc: 'Müşterinin satın alım sırasında OS seçmesini ve otomatik kurulmasını sağlar.', icon: 'fa-compact-disc', active: true },
+            { id: 'backup', name: 'Yedekleme & Snapshot Otomasyonu', desc: 'Sistemi zamanlanmış görevlerle tam yedekler.', icon: 'fa-clock-rotate-left', active: false },
+            { id: 'vlan', name: 'Gelişmiş Ağ İzolasyonu (VLAN)', desc: 'Müşteriler arası trafiği Layer-2 bazında izole eder.', icon: 'fa-network-wired', active: false },
+            { id: 'loadbalancer', name: 'Yük Dengeleyici (HA)', desc: 'Sunucular arası trafik yükünü dengeler.', icon: 'fa-scale-balanced', active: false },
+            { id: 'ddos', name: 'DDoS Koruma & Firewall', desc: 'Gelişmiş paket analizi ile port bazlı saldırıları engeller.', icon: 'fa-shield-virus', active: false },
+            { id: 'whmcs', name: 'WHMCS Tam Entegrasyon', desc: 'WHMCS ile çift yönlü tam otomasyon.', icon: 'fa-plug', active: false },
+            { id: 'docker', name: 'Docker & Container Yönetimi', desc: 'LXC ve Docker container oluşturma motoru.', icon: 'fa-docker', active: false },
+            { id: 'vgpu', name: 'GPU Passthrough & vGPU', desc: 'Sanal makinelere fiziksel ekran kartı ataması yapar.', icon: 'fa-microchip', active: false }
+        ],
+        
         // Provisioning forms
         createForm: {
             name: '',
@@ -3344,6 +3359,22 @@ document.addEventListener('alpine:init', () => {
                 if (res.ok) this.images = await res.json();
             } catch (err) {
                 console.error("Images fetch failure", err);
+            }
+        },
+
+        async downloadCloudImage(name, url) {
+            try {
+                this.showToast(`Bulut indirici başlatılıyor: ${name}`, 'info');
+                const response = await fetchHelper(`${API_BASE}/images/download`, {
+                    method: 'POST',
+                    headers: API_HEADERS,
+                    body: JSON.stringify({ name: name, url: url })
+                });
+                if(response.error) throw new Error(response.error);
+                this.showToast(`${name} başarıyla indirme kuyruğuna eklendi!`, 'success');
+                this.fetchImages(); // Refresh local list
+            } catch(e) {
+                this.showToast(`İndirme başlatılamadı: ${e.message}`, 'error');
             }
         },
 
@@ -4652,11 +4683,47 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
 
                     <!-- IMAGES TAB -->
                     <div x-show="activeTab === 'images'" x-cloak class="space-y-6">
-                        <div class="bg-slate-900/50 p-6 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm relative overflow-hidden group">
+                        <!-- Cloud Images (Hazır İmaj Kütüphanesi) -->
+                        <div class="bg-slate-900/50 p-0 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm overflow-hidden">
+                            <div class="p-5 border-b border-slate-800 flex justify-between items-center bg-[#111827]">
+                                <h3 class="text-sm font-bold text-white flex items-center space-x-2">
+                                    <i class="fa-solid fa-cloud-arrow-down text-brand-500"></i>
+                                    <span>Hazır İmaj Kütüphanesi (Bulut)</span>
+                                </h3>
+                            </div>
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-left border-collapse">
+                                    <thead>
+                                        <tr class="bg-[#111827] text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                                            <th class="p-4 border-b border-slate-800">İşletim Sistemi</th>
+                                            <th class="p-4 border-b border-slate-800 text-right">İşlem</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="text-xs font-medium text-slate-300 divide-y divide-slate-800/50">
+                                        <template x-for="cImg in cloudImages" :key="cImg.name">
+                                            <tr class="hover:bg-slate-800/30 transition">
+                                                <td class="p-4 flex items-center space-x-3">
+                                                    <i class="fa-brands text-lg" :class="cImg.icon"></i>
+                                                    <span x-text="cImg.name"></span>
+                                                </td>
+                                                <td class="p-4 text-right">
+                                                    <button @click="downloadCloudImage(cImg.name, cImg.url)" class="btn-primary px-3 py-1.5 rounded text-xs">
+                                                        <i class="fa-solid fa-download mr-1"></i> İndir ve Kur
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Custom Image Upload -->
+                        <div class="bg-slate-900/50 p-6 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm relative overflow-hidden group mt-6">
                             <div class="absolute inset-0 bg-gradient-to-br from-brand-500/5 to-transparent opacity-0 group-hover:opacity-100 transition duration-500"></div>
                             <h3 class="text-sm font-bold text-white mb-4 relative flex items-center space-x-2">
                                 <i class="fa-solid fa-cloud-arrow-up text-brand-500"></i>
-                                <span>İmaj Yükle (VCenter Content Library)</span>
+                                <span>Özel İmaj Yükle (Local/VCenter)</span>
                             </h3>
                             <div class="flex items-center justify-center w-full">
                                 <label for="dropzone-file" class="flex flex-col items-center justify-center w-full h-40 border-2 border-slate-700 border-dashed rounded-xl cursor-pointer bg-slate-950/50 hover:bg-slate-800/50 transition">
@@ -4710,36 +4777,38 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
                     <!-- MODULES TAB -->
                     <div x-show="activeTab === 'modules'" x-cloak class="space-y-6">
                         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                            <!-- Web Console Module -->
-                            <div class="bg-slate-900/50 p-6 rounded-2xl border border-brand-500/30 shadow-[0_0_15px_rgba(59,130,246,0.1)] backdrop-blur-sm relative overflow-hidden group">
-                                <div class="absolute inset-0 bg-gradient-to-br from-brand-500/10 to-transparent opacity-50"></div>
-                                <div class="relative flex flex-col h-full">
-                                    <div class="flex justify-between items-start mb-4">
-                                        <div class="w-12 h-12 rounded-xl bg-brand-500/20 border border-brand-500/30 flex items-center justify-center text-brand-500 text-xl shadow-lg">
-                                            <i class="fa-solid fa-terminal"></i>
+                            <template x-for="mod in systemModules" :key="mod.id">
+                                <div class="bg-slate-900/50 p-6 rounded-2xl border shadow-xl backdrop-blur-sm relative overflow-hidden group transition"
+                                     :class="(mod.active && licenseStatus.is_licensed) ? 'border-brand-500/30 hover:shadow-[0_0_15px_rgba(59,130,246,0.2)]' : 'border-slate-800 opacity-70 hover:opacity-100'">
+                                    
+                                    <div class="absolute inset-0 bg-gradient-to-br opacity-50" 
+                                         :class="(mod.active && licenseStatus.is_licensed) ? 'from-brand-500/10 to-transparent' : 'from-slate-800/20 to-transparent'"></div>
+                                    
+                                    <div class="relative flex flex-col h-full">
+                                        <div class="flex justify-between items-start mb-4">
+                                            <div class="w-12 h-12 rounded-xl border flex items-center justify-center text-xl shadow-lg"
+                                                 :class="(mod.active && licenseStatus.is_licensed) ? 'bg-brand-500/20 border-brand-500/30 text-brand-500' : 'bg-slate-800 border-slate-700 text-slate-400'">
+                                                <i class="fa-solid" :class="mod.icon"></i>
+                                            </div>
+                                            <span class="px-2.5 py-1 text-[10px] font-bold uppercase rounded-full border"
+                                                  :class="(mod.active && licenseStatus.is_licensed) ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-slate-800 text-slate-500 border-slate-700'"
+                                                  x-text="(mod.active && licenseStatus.is_licensed) ? 'Aktif' : 'Lisans Yok'"></span>
                                         </div>
-                                        <span class="px-2.5 py-1 text-[10px] font-bold uppercase rounded-full bg-green-500/20 text-green-400 border border-green-500/30">Aktif</span>
+                                        <h3 class="text-lg font-bold text-white mb-2" x-text="mod.name"></h3>
+                                        <p class="text-xs text-slate-400 mb-6 flex-1" x-text="mod.desc"></p>
+                                        
+                                        <!-- Buttons -->
+                                        <template x-if="mod.active && licenseStatus.is_licensed">
+                                            <button class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700 transition">Ayarları Yönet</button>
+                                        </template>
+                                        <template x-if="!mod.active || !licenseStatus.is_licensed">
+                                            <a href="https://discord.gg/ankaturkey" target="_blank" class="block w-full text-center py-2.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-bold rounded-lg transition shadow-lg shadow-brand-500/20">
+                                                Satın Alım İçin Ulaş
+                                            </a>
+                                        </template>
                                     </div>
-                                    <h3 class="text-lg font-bold text-white mb-2">Gelişmiş Web Console</h3>
-                                    <p class="text-xs text-slate-400 mb-6 flex-1">VCenter MKS protokolünü WebSockets üzerinden güvenli bir şekilde aktararak tarayıcı içi yüksek performanslı konsol deneyimi sunar.</p>
-                                    <button class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700 transition">Ayarları Yönet</button>
                                 </div>
-                            </div>
-                            
-                            <!-- Auto-Password Module -->
-                            <div class="bg-slate-900/50 p-6 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm relative overflow-hidden opacity-70 hover:opacity-100 transition">
-                                <div class="relative flex flex-col h-full">
-                                    <div class="flex justify-between items-start mb-4">
-                                        <div class="w-12 h-12 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 text-xl">
-                                            <i class="fa-solid fa-key"></i>
-                                        </div>
-                                        <span class="px-2.5 py-1 text-[10px] font-bold uppercase rounded-full bg-slate-800 text-slate-500 border border-slate-700">Lisans Yok</span>
-                                    </div>
-                                    <h3 class="text-lg font-bold text-white mb-2">Otomatik Şifre Yönetimi</h3>
-                                    <p class="text-xs text-slate-400 mb-6 flex-1">VM kurulumu sonrası işletim sistemi şifrelerini otomatik sıfırlama ve WiseCP üzerinden gösterme modülü.</p>
-                                    <button class="w-full py-2.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-bold rounded-lg transition shadow-lg shadow-brand-500/20">WiseCP'den Satın Al</button>
-                                </div>
-                            </div>
+                            </template>
                         </div>
                     </div>
 
@@ -5208,7 +5277,7 @@ _ANKAVM_EOF_
 cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/routers_images.py
 import os
 import shutil
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
 from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend.models import Image, ImageStatus
@@ -5248,6 +5317,32 @@ def get_images(db: Session = Depends(get_db)):
         db.refresh(default_img)
         images = [default_img]
     return images
+
+class ImageDownloadRequest(BaseModel):
+    name: str
+    url: str
+
+def download_image_task(url: str, filename: str):
+    import subprocess
+    import os
+    from backend.config import LIBVIRT_IMAGES_DIR
+    target_path = os.path.join(LIBVIRT_IMAGES_DIR, filename)
+    try:
+        # Simplistic wget download to libvirt pool
+        subprocess.run(["wget", "-q", "-O", target_path, url], check=True)
+        print(f"[Download Task] Success: {filename}")
+    except Exception as e:
+        print(f"[Download Task] Failed: {e}")
+
+@router.post("/download")
+async def download_image(req: ImageDownloadRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    # Basic slugify
+    filename = req.name.lower().replace(" ", "_") + ".iso"
+    
+    # Send to background task so it doesn't block FastAPI
+    background_tasks.add_task(download_image_task, req.url, filename)
+    
+    return {"message": "Download started in background"}
 
 @router.post("/upload")
 async def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):

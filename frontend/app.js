@@ -84,6 +84,27 @@ document.addEventListener('alpine:init', () => {
         },
         vcenterDiscovery: [],
         
+        // Modules & Cloud Images State
+        cloudImages: [
+            { name: 'Windows Server 2012 R2', url: 'http://iso.ankavm.net/win2012r2.iso', icon: 'fa-windows' },
+            { name: 'Windows Server 2016', url: 'http://iso.ankavm.net/win2016.iso', icon: 'fa-windows' },
+            { name: 'Windows Server 2019', url: 'http://iso.ankavm.net/win2019.iso', icon: 'fa-windows' },
+            { name: 'Ubuntu 22.04 LTS Server', url: 'http://iso.ankavm.net/ubuntu2204.iso', icon: 'fa-linux' }
+        ],
+        
+        systemModules: [
+            { id: 'webconsole', name: 'Gelişmiş Web Console', desc: 'VCenter MKS protokolünü WebSockets üzerinden güvenli aktarır.', icon: 'fa-terminal', active: true },
+            { id: 'autopass', name: 'Otomatik Şifre Yönetimi (WiseCP)', desc: 'VM kurulumu sonrası OS şifrelerini otomatik sıfırlar ve müşteriye gösterir.', icon: 'fa-key', active: true },
+            { id: 'osselect', name: 'İşletim Sistemi Seçme (Auto)', desc: 'Müşterinin satın alım sırasında OS seçmesini ve otomatik kurulmasını sağlar.', icon: 'fa-compact-disc', active: true },
+            { id: 'backup', name: 'Yedekleme & Snapshot Otomasyonu', desc: 'Sistemi zamanlanmış görevlerle tam yedekler.', icon: 'fa-clock-rotate-left', active: false },
+            { id: 'vlan', name: 'Gelişmiş Ağ İzolasyonu (VLAN)', desc: 'Müşteriler arası trafiği Layer-2 bazında izole eder.', icon: 'fa-network-wired', active: false },
+            { id: 'loadbalancer', name: 'Yük Dengeleyici (HA)', desc: 'Sunucular arası trafik yükünü dengeler.', icon: 'fa-scale-balanced', active: false },
+            { id: 'ddos', name: 'DDoS Koruma & Firewall', desc: 'Gelişmiş paket analizi ile port bazlı saldırıları engeller.', icon: 'fa-shield-virus', active: false },
+            { id: 'whmcs', name: 'WHMCS Tam Entegrasyon', desc: 'WHMCS ile çift yönlü tam otomasyon.', icon: 'fa-plug', active: false },
+            { id: 'docker', name: 'Docker & Container Yönetimi', desc: 'LXC ve Docker container oluşturma motoru.', icon: 'fa-docker', active: false },
+            { id: 'vgpu', name: 'GPU Passthrough & vGPU', desc: 'Sanal makinelere fiziksel ekran kartı ataması yapar.', icon: 'fa-microchip', active: false }
+        ],
+        
         // Provisioning forms
         createForm: {
             name: '',
@@ -375,6 +396,22 @@ document.addEventListener('alpine:init', () => {
                 if (res.ok) this.images = await res.json();
             } catch (err) {
                 console.error("Images fetch failure", err);
+            }
+        },
+
+        async downloadCloudImage(name, url) {
+            try {
+                this.showToast(`Bulut indirici başlatılıyor: ${name}`, 'info');
+                const response = await fetchHelper(`${API_BASE}/images/download`, {
+                    method: 'POST',
+                    headers: API_HEADERS,
+                    body: JSON.stringify({ name: name, url: url })
+                });
+                if(response.error) throw new Error(response.error);
+                this.showToast(`${name} başarıyla indirme kuyruğuna eklendi!`, 'success');
+                this.fetchImages(); // Refresh local list
+            } catch(e) {
+                this.showToast(`İndirme başlatılamadı: ${e.message}`, 'error');
             }
         },
 

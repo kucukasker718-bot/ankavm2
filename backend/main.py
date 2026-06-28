@@ -99,18 +99,14 @@ def get_license_status():
         read_license_file, verify_license_key_signature,
         is_license_expired
     )
-    import subprocess
+    from backend.license_check import get_hardware_uuid
     import datetime
 
     data = read_license_file()
 
     if not data:
         try:
-            result = subprocess.run(
-                ["dmidecode", "-s", "system-uuid"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            )
-            hwid = result.stdout.strip() or "Alınamadı"
+            hwid = get_hardware_uuid()
         except Exception:
             hwid = "Alınamadı"
         return {
@@ -189,11 +185,8 @@ def update_license_key(payload: LicenseUpdatePayload):
 
     # 3. Sunucunun HWID'ini al
     try:
-        result = subprocess.run(
-            ["dmidecode", "-s", "system-uuid"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
-        )
-        hwid = result.stdout.strip()
+        from backend.license_check import get_hardware_uuid
+        hwid = get_hardware_uuid()
         if not hwid:
             raise ValueError("HWID boş döndü")
     except Exception as e:

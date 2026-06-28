@@ -647,11 +647,47 @@
 
                     <!-- IMAGES TAB -->
                     <div x-show="activeTab === 'images'" x-cloak class="space-y-6">
-                        <div class="bg-slate-900/50 p-6 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm relative overflow-hidden group">
+                        <!-- Cloud Images (Hazır İmaj Kütüphanesi) -->
+                        <div class="bg-slate-900/50 p-0 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm overflow-hidden">
+                            <div class="p-5 border-b border-slate-800 flex justify-between items-center bg-[#111827]">
+                                <h3 class="text-sm font-bold text-white flex items-center space-x-2">
+                                    <i class="fa-solid fa-cloud-arrow-down text-brand-500"></i>
+                                    <span>Hazır İmaj Kütüphanesi (Bulut)</span>
+                                </h3>
+                            </div>
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-left border-collapse">
+                                    <thead>
+                                        <tr class="bg-[#111827] text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                                            <th class="p-4 border-b border-slate-800">İşletim Sistemi</th>
+                                            <th class="p-4 border-b border-slate-800 text-right">İşlem</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="text-xs font-medium text-slate-300 divide-y divide-slate-800/50">
+                                        <template x-for="cImg in cloudImages" :key="cImg.name">
+                                            <tr class="hover:bg-slate-800/30 transition">
+                                                <td class="p-4 flex items-center space-x-3">
+                                                    <i class="fa-brands text-lg" :class="cImg.icon"></i>
+                                                    <span x-text="cImg.name"></span>
+                                                </td>
+                                                <td class="p-4 text-right">
+                                                    <button @click="downloadCloudImage(cImg.name, cImg.url)" class="btn-primary px-3 py-1.5 rounded text-xs">
+                                                        <i class="fa-solid fa-download mr-1"></i> İndir ve Kur
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Custom Image Upload -->
+                        <div class="bg-slate-900/50 p-6 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm relative overflow-hidden group mt-6">
                             <div class="absolute inset-0 bg-gradient-to-br from-brand-500/5 to-transparent opacity-0 group-hover:opacity-100 transition duration-500"></div>
                             <h3 class="text-sm font-bold text-white mb-4 relative flex items-center space-x-2">
                                 <i class="fa-solid fa-cloud-arrow-up text-brand-500"></i>
-                                <span>İmaj Yükle (VCenter Content Library)</span>
+                                <span>Özel İmaj Yükle (Local/VCenter)</span>
                             </h3>
                             <div class="flex items-center justify-center w-full">
                                 <label for="dropzone-file" class="flex flex-col items-center justify-center w-full h-40 border-2 border-slate-700 border-dashed rounded-xl cursor-pointer bg-slate-950/50 hover:bg-slate-800/50 transition">
@@ -705,36 +741,38 @@
                     <!-- MODULES TAB -->
                     <div x-show="activeTab === 'modules'" x-cloak class="space-y-6">
                         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                            <!-- Web Console Module -->
-                            <div class="bg-slate-900/50 p-6 rounded-2xl border border-brand-500/30 shadow-[0_0_15px_rgba(59,130,246,0.1)] backdrop-blur-sm relative overflow-hidden group">
-                                <div class="absolute inset-0 bg-gradient-to-br from-brand-500/10 to-transparent opacity-50"></div>
-                                <div class="relative flex flex-col h-full">
-                                    <div class="flex justify-between items-start mb-4">
-                                        <div class="w-12 h-12 rounded-xl bg-brand-500/20 border border-brand-500/30 flex items-center justify-center text-brand-500 text-xl shadow-lg">
-                                            <i class="fa-solid fa-terminal"></i>
+                            <template x-for="mod in systemModules" :key="mod.id">
+                                <div class="bg-slate-900/50 p-6 rounded-2xl border shadow-xl backdrop-blur-sm relative overflow-hidden group transition"
+                                     :class="(mod.active && licenseStatus.is_licensed) ? 'border-brand-500/30 hover:shadow-[0_0_15px_rgba(59,130,246,0.2)]' : 'border-slate-800 opacity-70 hover:opacity-100'">
+                                    
+                                    <div class="absolute inset-0 bg-gradient-to-br opacity-50" 
+                                         :class="(mod.active && licenseStatus.is_licensed) ? 'from-brand-500/10 to-transparent' : 'from-slate-800/20 to-transparent'"></div>
+                                    
+                                    <div class="relative flex flex-col h-full">
+                                        <div class="flex justify-between items-start mb-4">
+                                            <div class="w-12 h-12 rounded-xl border flex items-center justify-center text-xl shadow-lg"
+                                                 :class="(mod.active && licenseStatus.is_licensed) ? 'bg-brand-500/20 border-brand-500/30 text-brand-500' : 'bg-slate-800 border-slate-700 text-slate-400'">
+                                                <i class="fa-solid" :class="mod.icon"></i>
+                                            </div>
+                                            <span class="px-2.5 py-1 text-[10px] font-bold uppercase rounded-full border"
+                                                  :class="(mod.active && licenseStatus.is_licensed) ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-slate-800 text-slate-500 border-slate-700'"
+                                                  x-text="(mod.active && licenseStatus.is_licensed) ? 'Aktif' : 'Lisans Yok'"></span>
                                         </div>
-                                        <span class="px-2.5 py-1 text-[10px] font-bold uppercase rounded-full bg-green-500/20 text-green-400 border border-green-500/30">Aktif</span>
+                                        <h3 class="text-lg font-bold text-white mb-2" x-text="mod.name"></h3>
+                                        <p class="text-xs text-slate-400 mb-6 flex-1" x-text="mod.desc"></p>
+                                        
+                                        <!-- Buttons -->
+                                        <template x-if="mod.active && licenseStatus.is_licensed">
+                                            <button class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700 transition">Ayarları Yönet</button>
+                                        </template>
+                                        <template x-if="!mod.active || !licenseStatus.is_licensed">
+                                            <a href="https://discord.gg/ankaturkey" target="_blank" class="block w-full text-center py-2.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-bold rounded-lg transition shadow-lg shadow-brand-500/20">
+                                                Satın Alım İçin Ulaş
+                                            </a>
+                                        </template>
                                     </div>
-                                    <h3 class="text-lg font-bold text-white mb-2">Gelişmiş Web Console</h3>
-                                    <p class="text-xs text-slate-400 mb-6 flex-1">VCenter MKS protokolünü WebSockets üzerinden güvenli bir şekilde aktararak tarayıcı içi yüksek performanslı konsol deneyimi sunar.</p>
-                                    <button class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700 transition">Ayarları Yönet</button>
                                 </div>
-                            </div>
-                            
-                            <!-- Auto-Password Module -->
-                            <div class="bg-slate-900/50 p-6 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm relative overflow-hidden opacity-70 hover:opacity-100 transition">
-                                <div class="relative flex flex-col h-full">
-                                    <div class="flex justify-between items-start mb-4">
-                                        <div class="w-12 h-12 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 text-xl">
-                                            <i class="fa-solid fa-key"></i>
-                                        </div>
-                                        <span class="px-2.5 py-1 text-[10px] font-bold uppercase rounded-full bg-slate-800 text-slate-500 border border-slate-700">Lisans Yok</span>
-                                    </div>
-                                    <h3 class="text-lg font-bold text-white mb-2">Otomatik Şifre Yönetimi</h3>
-                                    <p class="text-xs text-slate-400 mb-6 flex-1">VM kurulumu sonrası işletim sistemi şifrelerini otomatik sıfırlama ve WiseCP üzerinden gösterme modülü.</p>
-                                    <button class="w-full py-2.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-bold rounded-lg transition shadow-lg shadow-brand-500/20">WiseCP'den Satın Al</button>
-                                </div>
-                            </div>
+                            </template>
                         </div>
                     </div>
 
