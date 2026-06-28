@@ -44,6 +44,15 @@ class VCenterResource(Base):
     local_id = Column(String)
     vcenter_id = Column(String)
 
+class VCenterConfig(Base):
+    __tablename__ = "vcenter_config"
+    id = Column(Integer, primary_key=True, index=True)
+    host = Column(String)
+    username = Column(String)
+    password = Column(String)  # In production, encrypt this
+    is_active = Column(Boolean, default=False)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
 class License(Base):
     __tablename__ = "licenses"
     id = Column(Integer, primary_key=True, index=True)

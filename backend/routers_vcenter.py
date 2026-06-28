@@ -1,107 +1,112 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
-import os
-import shutil
+from backend.database import get_db
+from backend.models import VCenterConfig
+from pydantic import BaseModel
+from typing import Optional, List
+import ssl
 
-from .database import get_db
-from .models import Image, ImageStatus, Module, UserModule
-from .dependencies import get_current_user_id, require_module
+try:
+    from pyVim.connect import SmartConnect, Disconnect
+    from pyVmomi import vim
+    PYVMOMI_AVAILABLE = True
+except ImportError:
+    PYVMOMI_AVAILABLE = False
 
-router = APIRouter(prefix="/api/v1")
+router = APIRouter(prefix="/api/vcenter", tags=["vcenter"])
 
-# Directories
-UPLOAD_DIR = "/var/lib/ankavm/uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+class VCenterConfigRequest(BaseModel):
+    host: str
+    username: str
+    password: str
 
-# -----------------
-# IMAGES ENDPOINTS
-# -----------------
-@router.post("/images/upload")
-async def upload_image(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db)
-    # Require admin or specific module? Assuming open for admin for now.
-):
-    """Uploads an ISO or Template for VCenter sync"""
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+class VCenterConfigResponse(BaseModel):
+    host: Optional[str]
+    username: Optional[str]
+    is_active: bool
+
+class VCenterItem(BaseModel):
+    name: str
+    type: str
+    capacityGB: Optional[int] = None
+    freeGB: Optional[int] = None
+
+@router.get("/config", response_model=VCenterConfigResponse)
+def get_vcenter_config(db: Session = Depends(get_db)):
+    config = db.query(VCenterConfig).first()
+    if not config:
+        return {"host": "", "username": "", "is_active": False}
+    return {
+        "host": config.host,
+        "username": config.username,
+        "is_active": config.is_active
+    }
+
+@router.post("/config")
+def save_vcenter_config(req: VCenterConfigRequest, db: Session = Depends(get_db)):
+    if not req.host or not req.username or not req.password:
+        raise HTTPException(status_code=400, detail="Eksik bilgi girdiniz.")
         
-    db_image = Image(
-        name=file.filename,
-        filename=file.filename,
-        status=ImageStatus.UPLOADING
-    )
-    db.add(db_image)
+    # Attempt real connection if pyvmomi is installed
+    if PYVMOMI_AVAILABLE:
+        try:
+            context = ssl._create_unverified_context()
+            si = SmartConnect(host=req.host, user=req.username, pwd=req.password, sslContext=context)
+            Disconnect(si)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"VCenter bağlantı hatası: {str(e)}")
+            
+    config = db.query(VCenterConfig).first()
+    if not config:
+        config = VCenterConfig()
+        db.add(config)
+    
+    config.host = req.host
+    config.username = req.username
+    config.password = req.password
+    config.is_active = True
+    
     db.commit()
-    db.refresh(db_image)
-    
-    # Trigger Celery task (mocked here, should use celery .delay())
-    # from .celery_app import sync_image_to_vcenter
-    # sync_image_to_vcenter.delay(db_image.id, file_path)
-    
-    return {"message": "Image upload started", "image_id": db_image.id}
+    msg = "VCenter başarıyla bağlandı." if PYVMOMI_AVAILABLE else "VCenter bilgileri kaydedildi (PyVmomi yüklü olmadığı için simüle edildi)."
+    return {"message": msg}
 
-@router.get("/images")
-async def list_images(db: Session = Depends(get_db)):
-    """List available images for VDS provisioning"""
-    images = db.query(Image).all()
-    return images
-
-# -----------------
-# MODULES ENDPOINTS
-# -----------------
-@router.post("/modules/activate")
-async def activate_module(
-    module_name: str,
-    user_id: int,
-    db: Session = Depends(get_db)
-    # Requires webhook authentication here
-):
-    """WiseCP webhook endpoint to activate a module (feature:activate)"""
-    module = db.query(Module).filter(Module.name == module_name).first()
-    if not module:
-        # Create module if it doesn't exist
-        module = Module(name=module_name, description=f"Auto-generated {module_name}")
-        db.add(module)
-        db.commit()
-        db.refresh(module)
+@router.get("/discovery", response_model=List[VCenterItem])
+def discover_vcenter(db: Session = Depends(get_db)):
+    config = db.query(VCenterConfig).first()
+    if not config or not config.is_active:
+        raise HTTPException(status_code=400, detail="VCenter konfigüre edilmemiş.")
         
-    user_module = db.query(UserModule).filter(
-        UserModule.user_id == user_id,
-        UserModule.module_id == module.id
-    ).first()
-    
-    if user_module:
-        user_module.is_active = True
+    items = []
+    if PYVMOMI_AVAILABLE:
+        try:
+            context = ssl._create_unverified_context()
+            si = SmartConnect(host=config.host, user=config.username, pwd=config.password, sslContext=context)
+            content = si.RetrieveContent()
+            for child in content.rootFolder.childEntity:
+                if hasattr(child, 'datastore'):
+                    for ds in child.datastore:
+                        summary = ds.summary
+                        items.append({
+                            "name": summary.name,
+                            "type": "Datastore",
+                            "capacityGB": summary.capacity // (1024**3),
+                            "freeGB": summary.freeSpace // (1024**3)
+                        })
+                if hasattr(child, 'network'):
+                    for net in child.network:
+                        items.append({
+                            "name": net.name,
+                            "type": "Network"
+                        })
+            Disconnect(si)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
     else:
-        user_module = UserModule(user_id=user_id, module_id=module.id, is_active=True)
-        db.add(user_module)
+        # Mock Discovery Data
+        items = [
+            {"name": "vsanDatastore", "type": "Datastore", "capacityGB": 2048, "freeGB": 1024},
+            {"name": "VM Network", "type": "Network"},
+            {"name": "Management Network", "type": "Network"}
+        ]
         
-    db.commit()
-    return {"status": "success", "message": f"Module {module_name} activated for user {user_id}"}
-
-@router.get("/modules")
-async def list_user_modules(
-    user_id: int = Depends(get_current_user_id),
-    db: Session = Depends(get_db)
-):
-    """List active modules for the user"""
-    user_modules = db.query(UserModule).filter(
-        UserModule.user_id == user_id,
-        UserModule.is_active == True
-    ).all()
-    
-    return [{"module_name": um.module.name, "expires_at": um.expires_at} for um in user_modules]
-
-# -----------------
-# DEMO PROTECTED ENDPOINT
-# -----------------
-@router.get("/web-console/ticket", dependencies=[Depends(require_module("web_console"))])
-async def get_web_console_ticket(vm_id: str):
-    """Generates an MKS ticket for VCenter Web Console (requires web_console module)"""
-    # ... VCenter logic to generate ticket
-    return {"ticket": "mks-ticket-12345", "vm_id": vm_id}
+    return items

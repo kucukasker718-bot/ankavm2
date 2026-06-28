@@ -13,6 +13,9 @@ from backend.config import API_KEY, API_PORT, API_HOST, IS_MOCK, LICENSE_KEY
 from backend.schemas import VMCreate, VMResponse, HostStats, VMTelemetry, VMAction, NetworkCreate, WiseCPDeploy
 from backend.vm_manager import VMManager
 from backend.license_check import check_license_validity
+from backend import routers_vcenter
+from backend import routers_images
+from backend import routers_wisecp
 
 app = FastAPI(
     title="AnkaVM API Gateway",
@@ -28,6 +31,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(routers_vcenter.router)
+app.include_router(routers_images.router)
+app.include_router(routers_wisecp.router)
 
 # API Security token header
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)

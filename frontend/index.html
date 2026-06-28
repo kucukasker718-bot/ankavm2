@@ -80,7 +80,7 @@
     </div>
 
     <!-- Page Body Wrapper -->
-    <div class="flex-1 flex min-h-0">
+    <div class="flex-1 flex min-h-0" x-show="licenseStatus.is_licensed" style="display: none;">
         
         <!-- Left Sidebar Navigation -->
         <aside class="w-60 bg-[#111827] border-r border-slate-800 flex flex-col justify-between shrink-0 sticky top-0 h-screen z-30">
@@ -112,13 +112,21 @@
                     <i class="fa-solid fa-network-wired text-sm" :class="activeTab === 'networks' ? 'text-brand-500' : ''"></i>
                     <span>Ağ Köprüleri</span>
                 </button>
-                <button @click="setTab('images')" :class="activeTab === 'images' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
-                    <i class="fa-solid fa-compact-disc text-sm" :class="activeTab === 'images' ? 'text-brand-500' : ''"></i>
-                    <span>İmajlar</span>
+                <button @click="setTab('vcenter')" :class="activeTab === 'vcenter' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-server text-sm" :class="activeTab === 'vcenter' ? 'text-brand-500' : ''"></i>
+                    <span>VCenter Entegrasyonu</span>
                 </button>
                 <button @click="setTab('modules')" :class="activeTab === 'modules' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
                     <i class="fa-solid fa-puzzle-piece text-sm" :class="activeTab === 'modules' ? 'text-brand-500' : ''"></i>
                     <span>Modüller</span>
+                </button>
+                <button @click="setTab('images')" :class="activeTab === 'images' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-compact-disc text-sm" :class="activeTab === 'images' ? 'text-brand-500' : ''"></i>
+                    <span>İmajlar</span>
+                </button>
+                <button @click="setTab('wisecp')" :class="activeTab === 'wisecp' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
+                    <i class="fa-solid fa-plug text-sm" :class="activeTab === 'wisecp' ? 'text-brand-500' : ''"></i>
+                    <span>WiseCP Entegrasyonu</span>
                 </button>
                 <button @click="setTab('storage')" :class="activeTab === 'storage' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
                     <i class="fa-solid fa-database text-sm" :class="activeTab === 'storage' ? 'text-brand-500' : ''"></i>
@@ -127,10 +135,6 @@
                 <button @click="setTab('license')" :class="activeTab === 'license' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
                     <i class="fa-solid fa-key text-sm" :class="activeTab === 'license' ? 'text-brand-500' : ''"></i>
                     <span>Lisans Denetimi</span>
-                </button>
-                <button @click="setTab('settings')" :class="activeTab === 'settings' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/30'" class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded transition text-left">
-                    <i class="fa-solid fa-sliders text-sm" :class="activeTab === 'settings' ? 'text-brand-500' : ''"></i>
-                    <span>Entegrasyon & WiseCP</span>
                 </button>
             </nav>
 
@@ -158,8 +162,9 @@
                         <span x-show="activeTab === 'networks'">SANAL AĞ KÖPRÜLERİ</span>
                         <span x-show="activeTab === 'storage'">DEPOLAMA HAVUZLARI</span>
                         <span x-show="activeTab === 'license'">LİSANS YÖNETİCİSİ</span>
-                        <span x-show="activeTab === 'settings'">SİSTEM ENTEGRASYONLARI & WiseCP</span>
-                        <span x-show="activeTab === 'images'">İMAJ REPOSİTORY (VCENTER)</span>
+                        <span x-show="activeTab === 'wisecp'">WISECP ENTEGRASYONU</span>
+                        <span x-show="activeTab === 'vcenter'">VCENTER ENTEGRASYONU</span>
+                        <span x-show="activeTab === 'images'">İMAJ YÖNETİMİ</span>
                         <span x-show="activeTab === 'modules'">MODÜL MARKET</span>
                     </h2>
                     <div class="h-4 w-[1px] bg-slate-800"></div>
@@ -572,7 +577,74 @@
                         </div>
                     </div>
 
-                    <!-- 6. SETTINGS & WiseCP TAB -->
+                    <!-- VCENTER TAB -->
+                    <div x-show="activeTab === 'vcenter'" x-cloak class="space-y-6">
+                        <div class="corp-card rounded-lg p-5 space-y-4 max-w-2xl">
+                            <h3 class="text-xs font-bold uppercase text-white flex items-center space-x-1.5">
+                                <i class="fa-solid fa-server text-brand-500"></i>
+                                <span>VCenter Bağlantı Ayarları</span>
+                            </h3>
+                            <p class="text-xs text-slate-400">AnkaVM'i mevcut VCenter altyapınızla entegre ederek ISO ve imajları senkronize edebilirsiniz.</p>
+                            <form @submit.prevent="saveVcenterConfig()" class="space-y-3 font-mono text-xs">
+                                <div>
+                                    <label class="text-[9px] text-slate-500 uppercase">VCenter Host / IP:</label>
+                                    <input type="text" x-model="vcenterConfig.host" required placeholder="vcenter.sirket.local" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
+                                </div>
+                                <div>
+                                    <label class="text-[9px] text-slate-500 uppercase">Kullanıcı Adı:</label>
+                                    <input type="text" x-model="vcenterConfig.username" required placeholder="administrator@vsphere.local" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
+                                </div>
+                                <div>
+                                    <label class="text-[9px] text-slate-500 uppercase">Şifre:</label>
+                                    <input type="password" x-model="vcenterConfig.password" required placeholder="********" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
+                                </div>
+                                <button type="submit" class="btn-primary px-4 py-2 rounded text-xs font-bold">
+                                    <span x-text="vcenterConfig.is_active ? 'Bağlantı Aktif (Yenile)' : 'Bağlantıyı Test Et ve Kaydet'"></span>
+                                </button>
+                            </form>
+                        </div>
+
+                        <!-- VCenter Discovery Panel -->
+                        <div x-show="vcenterConfig.is_active" class="bg-slate-900/50 p-0 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm overflow-hidden mt-6">
+                            <div class="p-5 border-b border-slate-800 flex justify-between items-center bg-[#111827]">
+                                <h3 class="text-sm font-bold text-white flex items-center space-x-2">
+                                    <i class="fa-solid fa-radar text-brand-500"></i>
+                                    <span>VCenter Keşfedilen Kaynaklar (Discovery)</span>
+                                </h3>
+                                <button @click="fetchVcenterDiscovery()" class="text-xs text-brand-500 hover:text-white transition"><i class="fa-solid fa-rotate-right mr-1"></i>Yenile</button>
+                            </div>
+                            <div class="overflow-x-auto max-h-96 overflow-y-auto">
+                                <table class="w-full text-left border-collapse">
+                                    <thead>
+                                        <tr class="bg-[#111827] text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                                            <th class="p-4 border-b border-slate-800">Kaynak Adı</th>
+                                            <th class="p-4 border-b border-slate-800">Tür</th>
+                                            <th class="p-4 border-b border-slate-800 text-center">Kapasite / Bilgi</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="text-xs font-medium text-slate-300 divide-y divide-slate-800/50">
+                                        <template x-for="item in vcenterDiscovery" :key="item.name + item.type">
+                                            <tr class="hover:bg-slate-800/30 transition">
+                                                <td class="p-4 flex items-center space-x-3">
+                                                    <i class="fa-solid" :class="item.type === 'Datastore' ? 'fa-database text-emerald-500' : 'fa-network-wired text-brand-500'"></i>
+                                                    <span x-text="item.name"></span>
+                                                </td>
+                                                <td class="p-4 text-slate-400" x-text="item.type"></td>
+                                                <td class="p-4 text-center">
+                                                    <span x-show="item.type === 'Datastore'" class="text-[10px] text-slate-400" x-text="`Kapasite: ${item.capacityGB}GB / Boş: ${item.freeGB}GB`"></span>
+                                                    <span x-show="item.type === 'Network'" class="text-[10px] text-slate-400">PortGroup Ready</span>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                        <tr x-show="vcenterDiscovery.length === 0">
+                                            <td colspan="3" class="p-4 text-center text-slate-500">Henüz kaynak keşfedilmedi. Bağlantıyı test edin.</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- IMAGES TAB -->
                     <div x-show="activeTab === 'images'" x-cloak class="space-y-6">
                         <div class="bg-slate-900/50 p-6 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm relative overflow-hidden group">
@@ -588,7 +660,7 @@
                                         <p class="mb-2 text-sm text-slate-400"><span class="font-semibold text-brand-500">Tıklayın</span> veya sürükleyip bırakın</p>
                                         <p class="text-xs text-slate-500">ISO veya VM Template (.ova, .vmdk)</p>
                                     </div>
-                                    <input id="dropzone-file" type="file" class="hidden" />
+                                    <input id="dropzone-file" type="file" class="hidden" @change="uploadImage" accept=".iso,.img,.qcow2,.ova,.vmdk" />
                                 </label>
                             </div>
                         </div>
@@ -610,10 +682,19 @@
                                         </tr>
                                     </thead>
                                     <tbody class="text-xs font-medium text-slate-300 divide-y divide-slate-800/50">
-                                        <tr class="hover:bg-slate-800/30 transition">
-                                            <td class="p-4 flex items-center space-x-3"><i class="fa-solid fa-compact-disc text-slate-500 text-lg"></i><span>Ubuntu 22.04 LTS</span></td>
-                                            <td class="p-4 text-slate-400">Template</td>
-                                            <td class="p-4 text-center"><span class="px-2 py-1 rounded bg-green-500/10 text-green-500 border border-green-500/20 text-[10px]">Ready</span></td>
+                                        <template x-for="img in images" :key="img.id">
+                                            <tr class="hover:bg-slate-800/30 transition">
+                                                <td class="p-4 flex items-center space-x-3"><i class="fa-solid fa-compact-disc text-slate-500 text-lg"></i><span x-text="img.name"></span></td>
+                                                <td class="p-4 text-slate-400" x-text="img.is_template ? 'Template' : 'ISO Image'"></td>
+                                                <td class="p-4 text-center">
+                                                    <span x-show="img.status === 'ready'" class="px-2 py-1 rounded bg-green-500/10 text-green-500 border border-green-500/20 text-[10px]">Ready</span>
+                                                    <span x-show="img.status === 'uploading'" class="px-2 py-1 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20 text-[10px] animate-pulse">Uploading</span>
+                                                    <span x-show="img.status === 'failed'" class="px-2 py-1 rounded bg-red-500/10 text-red-500 border border-red-500/20 text-[10px]">Failed</span>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                        <tr x-show="images.length === 0">
+                                            <td colspan="3" class="p-4 text-center text-slate-500">Hiç imaj bulunamadı.</td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -657,7 +738,8 @@
                         </div>
                     </div>
 
-                    <div x-show="activeTab === 'settings'" x-cloak class="space-y-6">
+                    <!-- WISECP TAB -->
+                    <div x-show="activeTab === 'wisecp'" x-cloak class="space-y-6">
                         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                             <!-- Left: Setup and code -->
                             <div class="lg:col-span-2 corp-card rounded-lg p-5 space-y-4">
@@ -677,15 +759,46 @@ class AnkaVM {
     private $apiUrl = "http://your-server-ip:8086";
     private $apiKey = "ankavm-secure-dev-token-2026";
     
-    public function createServer($vmName, $cpu, $ram, $disk, $template, $rootPassword) {
-        return $this->call('/api/wisecp/deploy', 'POST', [
-            'order_id' => 'ws-order-'.rand(1000,9999),
-            'product_id' => 'saas-prod',
-            'name' => $vmName, 'cpu' => $cpu, 'ram_mb' => $ram, 'disk_gb' => $disk,
-            'disk_pool' => 'default-dir',
-            'os_template' => $template, 'root_password' => $rootPassword,
-            'callback_url' => 'http://yoursite.com/callback'
+    private function call($endpoint, $method, $data) {
+        $ch = curl_init($this->apiUrl . $endpoint);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json',
+            'X-API-Key: ' . $this->apiKey
         ]);
+        return json_decode(curl_exec($ch), true);
+    }
+    
+    public function createServer($params) {
+        return $this->call('/api/wisecp/deploy', 'POST', [
+            'order_id' => $params['order_id'],
+            'product_id' => $params['product_id'],
+            'name' => $params['hostname'], 
+            'cpu' => $params['config']['cpu'], 
+            'ram_mb' => $params['config']['ram'], 
+            'disk_gb' => $params['config']['disk'],
+            'disk_pool' => 'default-dir',
+            'os_template' => $params['config']['os'],
+            'callback_url' => 'http://yoursite.com/wisecp_callback.php'
+        ]);
+    }
+
+    public function suspendServer($params) {
+        return $this->call('/api/wisecp/suspend', 'POST', ['order_id' => $params['order_id']]);
+    }
+
+    public function unsuspendServer($params) {
+        return $this->call('/api/wisecp/unsuspend', 'POST', ['order_id' => $params['order_id']]);
+    }
+
+    public function terminateServer($params) {
+        return $this->call('/api/wisecp/terminate', 'POST', ['order_id' => $params['order_id']]);
+    }
+
+    public function rebootServer($params) {
+        return $this->call('/api/wisecp/reboot', 'POST', ['order_id' => $params['order_id']]);
     }
 }</pre>
                             </div>

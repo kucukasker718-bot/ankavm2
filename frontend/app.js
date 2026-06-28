@@ -15,6 +15,7 @@ document.addEventListener('alpine:init', () => {
         vms: [],
         networks: [],
         storagePools: [],
+        images: [],
         activityLogs: [],
         ipPools: [],
         ipLeases: [],
@@ -74,6 +75,15 @@ document.addEventListener('alpine:init', () => {
         showWiseCpSimulateModal: false,
         licenseKeyInput: '',
         
+        // VCenter State
+        vcenterConfig: {
+            host: '',
+            username: '',
+            password: '',
+            is_active: false
+        },
+        vcenterDiscovery: [],
+        
         // Provisioning forms
         createForm: {
             name: '',
@@ -132,9 +142,23 @@ document.addEventListener('alpine:init', () => {
             
             toggleSkeletonLoaders(true);
             
-            // Initial data pull
+            // İlk olarak lisans durumunu kontrol et
+            await this.fetchLicenseStatus();
+            
+            // Lisans yoksa veri çekmeyi ve interval'ları başlatma
+            if (!this.licenseStatus.is_licensed) {
+                this.loading = false;
+                toggleSkeletonLoaders(false);
+                return;
+            }
+            
+            // Lisanslıysa tüm sistemi başlat
+            await this.bootSystem();
+        },
+
+        async bootSystem() {
+            toggleSkeletonLoaders(true);
             await Promise.all([
-                this.fetchLicenseStatus(),
                 this.fetchVms(),
                 this.fetchHostStats(),
                 this.fetchNetworks(),
@@ -142,8 +166,17 @@ document.addEventListener('alpine:init', () => {
                 this.fetchLogs(),
                 this.fetchIpamData(),
                 this.fetchIpLogs(),
-                this.fetchWiseCpOrders()
+                this.fetchWiseCpOrders(),
+                this.fetchVcenterConfig()
             ]);
+            
+            // If vcenter is active, fetch discovery
+            if (this.vcenterConfig.is_active) {
+                this.fetchVcenterDiscovery();
+            }
+            
+            // Fetch images after vcenter is loaded
+            await this.fetchImages();
             
             this.loading = false;
             toggleSkeletonLoaders(false);
@@ -155,21 +188,24 @@ document.addEventListener('alpine:init', () => {
             });
  
             // Set up timers for data sync
-            setInterval(() => this.fetchHostStats(), 4000);
-            setInterval(() => this.fetchVms(), 5000);
-            setInterval(() => this.fetchActiveVmTelemetry(), 3000);
-            setInterval(() => this.fetchActiveVmTraffic(), 3000);
-            setInterval(() => this.fetchLogs(), 6000);
-            setInterval(() => this.fetchLicenseStatus(), 15000);
-            setInterval(() => this.fetchWiseCpOrders(), 5000);
-            setInterval(() => {
-                if (this.activeTab === 'networks') this.fetchNetworks();
-                if (this.activeTab === 'storage') this.fetchStorage();
-                if (this.activeTab === 'ipam') {
-                    this.fetchIpamData();
-                    this.fetchIpLogs();
-                }
-            }, 8000);
+            if(!this._intervalsStarted) {
+                setInterval(() => this.fetchHostStats(), 4000);
+                setInterval(() => this.fetchVms(), 5000);
+                setInterval(() => this.fetchActiveVmTelemetry(), 3000);
+                setInterval(() => this.fetchActiveVmTraffic(), 3000);
+                setInterval(() => this.fetchLogs(), 6000);
+                setInterval(() => this.fetchLicenseStatus(), 15000);
+                setInterval(() => this.fetchWiseCpOrders(), 5000);
+                setInterval(() => {
+                    if (this.activeTab === 'networks') this.fetchNetworks();
+                    if (this.activeTab === 'storage') this.fetchStorage();
+                    if (this.activeTab === 'ipam') {
+                        this.fetchIpamData();
+                        this.fetchIpLogs();
+                    }
+                }, 8000);
+                this._intervalsStarted = true;
+            }
         },
 
         setTab(tabName) {
@@ -220,6 +256,9 @@ document.addEventListener('alpine:init', () => {
                     this.showToast(data.message, "success");
                     this.licenseKeyInput = '';
                     await this.fetchLicenseStatus();
+                    if (this.licenseStatus.is_licensed) {
+                        await this.bootSystem();
+                    }
                 } else {
                     throw new Error(data.detail);
                 }
@@ -258,6 +297,57 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        async fetchVcenterConfig() {
+            try {
+                const res = await fetch(`${API_BASE}/vcenter/config`, { headers: API_HEADERS });
+                if (res.ok) {
+                    const data = await res.json();
+                    this.vcenterConfig.host = data.host;
+                    this.vcenterConfig.username = data.username;
+                    this.vcenterConfig.is_active = data.is_active;
+                }
+            } catch (err) {
+                console.error("VCenter fetch failure", err);
+            }
+        },
+
+        async saveVcenterConfig() {
+            this.showToast("VCenter'a bağlanılıyor...", "info");
+            try {
+                const res = await fetch(`${API_BASE}/vcenter/config`, {
+                    method: 'POST',
+                    headers: API_HEADERS,
+                    body: JSON.stringify({
+                        host: this.vcenterConfig.host,
+                        username: this.vcenterConfig.username,
+                        password: this.vcenterConfig.password
+                    })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    this.showToast(data.message, "success");
+                    this.vcenterConfig.is_active = true;
+                    this.vcenterConfig.password = ''; // clear for security
+                    await this.fetchVcenterDiscovery();
+                } else {
+                    throw new Error(data.detail || "VCenter bağlantı hatası");
+                }
+            } catch (err) {
+                this.showToast(err.message, "error");
+            }
+        },
+
+        async fetchVcenterDiscovery() {
+            try {
+                const res = await fetch(`${API_BASE}/vcenter/discovery`, { headers: API_HEADERS });
+                if (res.ok) {
+                    this.vcenterDiscovery = await res.json();
+                }
+            } catch (err) {
+                console.error("VCenter discovery fetch failure", err);
+            }
+        },
+
         async fetchStorage() {
             try {
                 const res = await fetch(`${API_BASE}/storage/pools`, { headers: API_HEADERS });
@@ -266,7 +356,7 @@ document.addEventListener('alpine:init', () => {
                     this.renderApexStorageCharts();
                 }
             } catch (err) {
-                console.error("Storage pools fetch failure", err);
+                console.error("Storage fetch failure", err);
             }
         },
 
@@ -276,6 +366,43 @@ document.addEventListener('alpine:init', () => {
                 if (res.ok) this.activityLogs = await res.json();
             } catch (err) {
                 console.error("Logs fetch failure", err);
+            }
+        },
+
+        async fetchImages() {
+            try {
+                const res = await fetch(`${API_BASE}/images`, { headers: API_HEADERS });
+                if (res.ok) this.images = await res.json();
+            } catch (err) {
+                console.error("Images fetch failure", err);
+            }
+        },
+
+        async uploadImage(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            this.showToast("İmaj yükleniyor, lütfen bekleyin...", "info");
+            const formData = new FormData();
+            formData.append("file", file);
+
+            try {
+                const res = await fetch(`${API_BASE}/images/upload`, {
+                    method: 'POST',
+                    headers: { 'X-API-Key': API_HEADERS['X-API-Key'] },
+                    body: formData
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    this.showToast(data.message, "success");
+                    await this.fetchImages();
+                } else {
+                    throw new Error(data.detail);
+                }
+            } catch (err) {
+                this.showToast(err.message, "error");
+            } finally {
+                event.target.value = ''; // Reset input
             }
         },
 
