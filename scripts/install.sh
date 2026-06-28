@@ -5008,6 +5008,375 @@ class AnkaVM {
 
 _ANKAVM_EOF_
 
+# Write backend/models.py
+cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/models.py
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Enum
+from sqlalchemy.orm import relationship
+import enum
+from datetime import datetime
+from .database import Base
+
+class ImageStatus(str, enum.Enum):
+    UPLOADING = "uploading"
+    SYNCING = "syncing"
+    READY = "ready"
+    FAILED = "failed"
+
+class Image(Base):
+    __tablename__ = "images"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)
+    filename = Column(String)
+    is_template = Column(Boolean, default=False)
+    content_library_item_id = Column(String, nullable=True)
+    status = Column(Enum(ImageStatus), default=ImageStatus.UPLOADING)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class Module(Base):
+    __tablename__ = "modules"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)  # e.g., 'web_console', 'auto_password'
+    description = Column(String)
+    is_active = Column(Boolean, default=True)
+
+class UserModule(Base):
+    __tablename__ = "user_modules"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, index=True)  # WiseCP user ID
+    module_id = Column(Integer, ForeignKey("modules.id"))
+    is_active = Column(Boolean, default=True)
+    expires_at = Column(DateTime, nullable=True)
+
+    module = relationship("Module")
+
+class VCenterResource(Base):
+    __tablename__ = "vcenter_resources"
+    id = Column(Integer, primary_key=True, index=True)
+    resource_type = Column(String)  # 'VM', 'Datastore', 'Network'
+    local_id = Column(String)
+    vcenter_id = Column(String)
+
+class VCenterConfig(Base):
+    __tablename__ = "vcenter_config"
+    id = Column(Integer, primary_key=True, index=True)
+    host = Column(String)
+    username = Column(String)
+    password = Column(String)  # In production, encrypt this
+    is_active = Column(Boolean, default=False)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+class License(Base):
+    __tablename__ = "licenses"
+    id = Column(Integer, primary_key=True, index=True)
+    hwid = Column(String, unique=True, index=True)
+    status = Column(String, default="active") # 'active', 'suspended'
+    expire_date = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+_ANKAVM_EOF_
+
+# Write backend/routers_vcenter.py
+cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/routers_vcenter.py
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from backend.database import get_db
+from backend.models import VCenterConfig
+from pydantic import BaseModel
+from typing import Optional, List
+import ssl
+
+try:
+    from pyVim.connect import SmartConnect, Disconnect
+    from pyVmomi import vim
+    PYVMOMI_AVAILABLE = True
+except ImportError:
+    PYVMOMI_AVAILABLE = False
+
+router = APIRouter(prefix="/api/vcenter", tags=["vcenter"])
+
+class VCenterConfigRequest(BaseModel):
+    host: str
+    username: str
+    password: str
+
+class VCenterConfigResponse(BaseModel):
+    host: Optional[str]
+    username: Optional[str]
+    is_active: bool
+
+class VCenterItem(BaseModel):
+    name: str
+    type: str
+    capacityGB: Optional[int] = None
+    freeGB: Optional[int] = None
+
+@router.get("/config", response_model=VCenterConfigResponse)
+def get_vcenter_config(db: Session = Depends(get_db)):
+    config = db.query(VCenterConfig).first()
+    if not config:
+        return {"host": "", "username": "", "is_active": False}
+    return {
+        "host": config.host,
+        "username": config.username,
+        "is_active": config.is_active
+    }
+
+@router.post("/config")
+def save_vcenter_config(req: VCenterConfigRequest, db: Session = Depends(get_db)):
+    if not req.host or not req.username or not req.password:
+        raise HTTPException(status_code=400, detail="Eksik bilgi girdiniz.")
+        
+    # Attempt real connection if pyvmomi is installed
+    if PYVMOMI_AVAILABLE:
+        try:
+            context = ssl._create_unverified_context()
+            si = SmartConnect(host=req.host, user=req.username, pwd=req.password, sslContext=context)
+            Disconnect(si)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"VCenter bağlantı hatası: {str(e)}")
+            
+    config = db.query(VCenterConfig).first()
+    if not config:
+        config = VCenterConfig()
+        db.add(config)
+    
+    config.host = req.host
+    config.username = req.username
+    config.password = req.password
+    config.is_active = True
+    
+    db.commit()
+    msg = "VCenter başarıyla bağlandı." if PYVMOMI_AVAILABLE else "VCenter bilgileri kaydedildi (PyVmomi yüklü olmadığı için simüle edildi)."
+    return {"message": msg}
+
+@router.get("/discovery", response_model=List[VCenterItem])
+def discover_vcenter(db: Session = Depends(get_db)):
+    config = db.query(VCenterConfig).first()
+    if not config or not config.is_active:
+        raise HTTPException(status_code=400, detail="VCenter konfigüre edilmemiş.")
+        
+    items = []
+    if PYVMOMI_AVAILABLE:
+        try:
+            context = ssl._create_unverified_context()
+            si = SmartConnect(host=config.host, user=config.username, pwd=config.password, sslContext=context)
+            content = si.RetrieveContent()
+            for child in content.rootFolder.childEntity:
+                if hasattr(child, 'datastore'):
+                    for ds in child.datastore:
+                        summary = ds.summary
+                        items.append({
+                            "name": summary.name,
+                            "type": "Datastore",
+                            "capacityGB": summary.capacity // (1024**3),
+                            "freeGB": summary.freeSpace // (1024**3)
+                        })
+                if hasattr(child, 'network'):
+                    for net in child.network:
+                        items.append({
+                            "name": net.name,
+                            "type": "Network"
+                        })
+            Disconnect(si)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    else:
+        # Mock Discovery Data
+        items = [
+            {"name": "vsanDatastore", "type": "Datastore", "capacityGB": 2048, "freeGB": 1024},
+            {"name": "VM Network", "type": "Network"},
+            {"name": "Management Network", "type": "Network"}
+        ]
+        
+    return items
+
+_ANKAVM_EOF_
+
+# Write backend/routers_images.py
+cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/routers_images.py
+import os
+import shutil
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from sqlalchemy.orm import Session
+from backend.database import get_db
+from backend.models import Image, ImageStatus
+from pydantic import BaseModel
+from typing import List
+
+router = APIRouter(prefix="/api/images", tags=["images"])
+
+# In a real environment, this should be /var/lib/libvirt/images
+# For dev/windows, we'll use a local folder
+UPLOAD_DIR = os.path.join(os.getcwd(), "storage_images")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+class ImageResponse(BaseModel):
+    id: int
+    name: str
+    filename: str
+    is_template: bool
+    status: str
+
+    class Config:
+        from_attributes = True
+
+@router.get("", response_model=List[ImageResponse])
+def get_images(db: Session = Depends(get_db)):
+    images = db.query(Image).all()
+    # If no images, let's create a default one to show in UI
+    if not images:
+        default_img = Image(
+            name="Ubuntu 22.04 LTS",
+            filename="ubuntu-22.04-server-cloudimg-amd64.img",
+            is_template=True,
+            status=ImageStatus.READY
+        )
+        db.add(default_img)
+        db.commit()
+        db.refresh(default_img)
+        images = [default_img]
+    return images
+
+@router.post("/upload")
+async def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    if not file.filename.endswith(('.iso', '.img', '.qcow2', '.ova', '.vmdk')):
+        raise HTTPException(status_code=400, detail="Sadece ISO, IMG, QCOW2, OVA ve VMDK desteklenmektedir.")
+    
+    file_location = os.path.join(UPLOAD_DIR, file.filename)
+    
+    # Create DB record in UPLOADING state
+    new_image = Image(
+        name=file.filename,
+        filename=file.filename,
+        is_template=False,
+        status=ImageStatus.UPLOADING
+    )
+    db.add(new_image)
+    db.commit()
+    db.refresh(new_image)
+    
+    try:
+        with open(file_location, "wb+") as file_object:
+            shutil.copyfileobj(file.file, file_object)
+        
+        # After upload finishes, set to READY
+        new_image.status = ImageStatus.READY
+        db.commit()
+    except Exception as e:
+        new_image.status = ImageStatus.FAILED
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"Yükleme hatası: {str(e)}")
+        
+    return {"message": "İmaj başarıyla yüklendi", "image_id": new_image.id}
+
+_ANKAVM_EOF_
+
+# Write backend/routers_wisecp.py
+cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/routers_wisecp.py
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Header
+from sqlalchemy.orm import Session
+from backend.database import get_db
+from backend.schemas import WiseCPDeploy
+from pydantic import BaseModel
+import asyncio
+import httpx
+from datetime import datetime
+
+router = APIRouter(prefix="/api/wisecp", tags=["wisecp"])
+
+# Simulated queue
+wisecp_orders = []
+
+async def callback_wisecp(url: str, data: dict):
+    if not url:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(url, json=data, timeout=10.0)
+    except Exception as e:
+        print(f"WiseCP Callback failed: {e}")
+
+async def process_deployment(order: WiseCPDeploy):
+    # Simulate deployment delay
+    await asyncio.sleep(5)
+    
+    # Generate mock IP and Password
+    generated_ip = f"192.168.100.{order.cpu * 10 + 2}"
+    generated_pass = "AutoPass_" + order.order_id[-4:]
+    
+    for o in wisecp_orders:
+        if o["order_id"] == order.order_id:
+            o["status"] = "COMPLETED"
+            o["ip_address"] = generated_ip
+            o["root_password"] = generated_pass
+            break
+            
+    # Send callback
+    if order.callback_url:
+        await callback_wisecp(order.callback_url, {
+            "order_id": order.order_id,
+            "status": "active",
+            "ip": generated_ip,
+            "password": generated_pass
+        })
+
+@router.post("/deploy")
+async def wisecp_deploy(order: WiseCPDeploy, background_tasks: BackgroundTasks, x_api_key: str = Header(None)):
+    if not x_api_key or x_api_key != "ankavm-secure-dev-token-2026":
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+        
+    wisecp_orders.insert(0, {
+        "order_id": order.order_id,
+        "product_id": order.product_id,
+        "name": order.name,
+        "cpu": order.cpu,
+        "ram_mb": order.ram_mb,
+        "disk_gb": order.disk_gb,
+        "status": "PROVISIONING",
+        "ip_address": None,
+        "error": None,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    })
+    
+    background_tasks.add_task(process_deployment, order)
+    
+    return {"status": "accepted", "message": "Deployment started."}
+
+class ActionRequest(BaseModel):
+    order_id: str
+    callback_url: str = None
+
+@router.post("/suspend")
+async def wisecp_suspend(req: ActionRequest, x_api_key: str = Header(None)):
+    if not x_api_key or x_api_key != "ankavm-secure-dev-token-2026":
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    # Simulate suspension
+    return {"status": "success", "message": f"{req.order_id} suspended."}
+
+@router.post("/unsuspend")
+async def wisecp_unsuspend(req: ActionRequest, x_api_key: str = Header(None)):
+    if not x_api_key or x_api_key != "ankavm-secure-dev-token-2026":
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    return {"status": "success", "message": f"{req.order_id} unsuspended."}
+
+@router.post("/terminate")
+async def wisecp_terminate(req: ActionRequest, x_api_key: str = Header(None)):
+    if not x_api_key or x_api_key != "ankavm-secure-dev-token-2026":
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    return {"status": "success", "message": f"{req.order_id} terminated."}
+
+@router.get("/orders")
+def get_wisecp_orders():
+    return wisecp_orders
+
+_ANKAVM_EOF_
+
+# Write backend/__init__.py
+cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/__init__.py
+# Initialize backend package
+
+_ANKAVM_EOF_
+
 # Write nginx/ankavm.conf
 cat << '_ANKAVM_EOF_' > /opt/ankavm/nginx/ankavm.conf
 server {

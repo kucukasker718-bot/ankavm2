@@ -21,8 +21,8 @@ def replace_block(filepath, varname):
         content = pattern.sub(lambda m: f"{m.group(1)}{file_data}{m.group(2)}", content)
         print(f"Updated {varname} in install.sh")
     else:
-        # If it doesn't exist, we append it right before the "# 5. Deploy systemd service" block
-        insert_marker = "# 5. Deploy systemd service"
+        # If it doesn't exist, we append it right before the "# Write nginx/ankavm.conf" block
+        insert_marker = "# Write nginx/ankavm.conf"
         print(f"Adding new file {varname} to install.sh")
         replacement = f"cat << '_ANKAVM_EOF_' > /opt/ankavm/{varname}\n{file_data}\n_ANKAVM_EOF_"
         content = content.replace(insert_marker, f"# Write {varname}\n{replacement}\n\n{insert_marker}")
@@ -37,6 +37,13 @@ replace_block("c:/Users/Administrator/Desktop/ankavm2-main/frontend/index.html",
 replace_block("c:/Users/Administrator/Desktop/ankavm2-main/backend/routers_vcenter.py", "backend/routers_vcenter.py")
 replace_block("c:/Users/Administrator/Desktop/ankavm2-main/backend/routers_images.py", "backend/routers_images.py")
 replace_block("c:/Users/Administrator/Desktop/ankavm2-main/backend/routers_wisecp.py", "backend/routers_wisecp.py")
+
+# Create __init__.py if missing
+init_path = "c:/Users/Administrator/Desktop/ankavm2-main/backend/__init__.py"
+if not os.path.exists(init_path):
+    with open(init_path, "w") as f:
+        f.write("# Initialize backend package\n")
+replace_block(init_path, "backend/__init__.py")
 
 # Also add pyvmomi to requirements.txt
 req_pattern = re.compile(r"(cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/requirements\.txt.*?)(_ANKAVM_EOF_)", re.DOTALL)
