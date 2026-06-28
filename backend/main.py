@@ -67,22 +67,9 @@ async def check_global_license(request: Request):
                 detail=f"License Check Failed. Hypervisor API Locked. Reason: {LICENSE_STATUS['detail']}"
             )
 
-# Apply global licensing middleware check
-@app.middleware("http")
-async def license_middleware(request: Request, call_next):
-    # Bypass for licensing status page and static files
-    path = request.url.path
-    if path.startswith("/api") and not (path == "/api/license/status" or path == "/api/license/update"):
-        if not LICENSE_STATUS["is_licensed"]:
-            # Try to re-verify once dynamically
-            sync_license_status()
-            if not LICENSE_STATUS["is_licensed"]:
-                return JSONResponse(
-                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                    content={"detail": f"License Required: {LICENSE_STATUS['detail']}"}
-                )
-    response = await call_next(request)
-    return response
+# Apply HWID based licensing middleware check
+from backend.license_middleware import hwid_license_middleware
+app.middleware("http")(hwid_license_middleware)
 
 from fastapi.responses import JSONResponse
 
@@ -100,25 +87,158 @@ async def verify_api_key(header_value: str = Security(api_key_header)):
 
 @app.get("/api/license/status")
 def get_license_status():
-    """Fetch current node licensing constraints and activation metadata."""
-    sync_license_status()
-    return LICENSE_STATUS
+    """Lisans durumunu ve bitiş tarihini döndürür."""
+    from backend.license_middleware import (
+        read_license_file, verify_license_key_signature,
+        is_license_expired
+    )
+    import subprocess
+    import datetime
+
+    data = read_license_file()
+
+    if not data:
+        try:
+            result = subprocess.run(
+                ["dmidecode", "-s", "system-uuid"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            hwid = result.stdout.strip() or "Alınamadı"
+        except Exception:
+            hwid = "Alınamadı"
+        return {
+            "is_licensed": False,
+            "owner_name": "Lisanssız Sunucu",
+            "hardware_id": hwid,
+            "expires_at": None,
+            "detail": "Lisans anahtarınızı giriniz."
+        }
+
+    valid, expiry_date_str = verify_license_key_signature(data["license_key"])
+    if not valid:
+        return {
+            "is_licensed": False,
+            "owner_name": "Geçersiz Lisans",
+            "hardware_id": data.get("hwid", "?"),
+            "expires_at": None,
+            "detail": "Lisans anahtarı geçersiz veya değiştirilmiş."
+        }
+
+    if is_license_expired(expiry_date_str):
+        return {
+            "is_licensed": False,
+            "owner_name": "Süresi Dolmuş",
+            "hardware_id": data["hwid"],
+            "expires_at": expiry_date_str,
+            "detail": f"Lisans süresi doldu! Lütfen yenileyin."
+        }
+
+    # Bitiş tarihi göstergesi
+    if expiry_date_str == "99991231":
+        expires_display = "Sonsuz (Lifetime)"
+    else:
+        d = datetime.datetime.strptime(expiry_date_str, "%Y%m%d").date()
+        expires_display = d.strftime("%d.%m.%Y")
+
+    return {
+        "is_licensed": True,
+        "owner_name": "AnkaVM Lisanslı Sunucu",
+        "hardware_id": data["hwid"],
+        "expires_at": expires_display,
+        "detail": "Lisans aktif ve doğrulandı."
+    }
+
 
 class LicenseUpdatePayload(BaseModel):
     license_key: str
 
+
 @app.post("/api/license/update")
-def update_license_key(payload: LicenseUpdatePayload, api_key: str = Depends(verify_api_key)):
-    """Updates node license key and re-handshakes verification server."""
-    os.environ["ANKAVM_LICENSE_KEY"] = payload.license_key
-    # We will modify the runtime key
-    import backend.config as config
-    config.LICENSE_KEY = payload.license_key
-    sync_license_status()
-    if LICENSE_STATUS["is_licensed"]:
-        return {"status": "success", "message": f"License key updated. Verified for {LICENSE_STATUS['owner_name']}"}
+def update_license_key(payload: LicenseUpdatePayload):
+    """Frontend'den girilen lisans anahtarını doğrular ve license.key dosyasını oluşturur."""
+    import subprocess
+    import base64
+    from backend.license_middleware import (
+        LICENSE_FILE_PATH, SALT,
+        verify_license_key_signature, is_license_expired
+    )
+
+    entered_key = payload.license_key.strip()
+
+    # 1. HMAC imza + format doğrulama
+    valid, expiry_date_str = verify_license_key_signature(entered_key)
+    if not valid:
+        raise HTTPException(
+            status_code=400,
+            detail="Geçersiz Lisans Anahtarı! Bu anahtar yetkili bir kaynak tarafından üretilmemiş."
+        )
+
+    # 2. Bitiş tarihi kontrolü
+    if is_license_expired(expiry_date_str):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Bu lisans anahtarının süresi dolmuş! ({expiry_date_str})"
+        )
+
+    # 3. Sunucunun HWID'ini al
+    try:
+        result = subprocess.run(
+            ["dmidecode", "-s", "system-uuid"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
+        )
+        hwid = result.stdout.strip()
+        if not hwid:
+            raise ValueError("HWID boş döndü")
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Sistem HWID alınamadı. install.sh root olarak çalıştırıldı mı? ({e})"
+        )
+
+    # 4. license.key dosyasını yaz: base64(hwid|license_key|SALT)
+    try:
+        raw = f"{hwid}|{entered_key}|{SALT}"
+        encoded = base64.b64encode(raw.encode('utf-8')).decode('utf-8')
+        os.makedirs(os.path.dirname(LICENSE_FILE_PATH), exist_ok=True)
+        with open(LICENSE_FILE_PATH, 'w') as f:
+            f.write(encoded)
+        os.chmod(LICENSE_FILE_PATH, 0o600)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lisans dosyası yazılamadı: {e}")
+
+    # 5. DB kayıt (opsiyonel)
+    try:
+        from backend.database import SessionLocal
+        from backend.models import License
+        import datetime
+        db = SessionLocal()
+        expire_dt = None if expiry_date_str == "99991231" else \
+            datetime.datetime.strptime(expiry_date_str, "%Y%m%d")
+        existing = db.query(License).filter(License.hwid == hwid).first()
+        if not existing:
+            db.add(License(hwid=hwid, status="active", expire_date=expire_dt))
+            db.commit()
+        else:
+            existing.status = "active"
+            existing.expire_date = expire_dt
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+
+    import datetime
+    if expiry_date_str == "99991231":
+        expires_display = "Sonsuz (Lifetime)"
     else:
-        raise HTTPException(status_code=400, detail=f"Update failed: {LICENSE_STATUS['detail']}")
+        d = datetime.datetime.strptime(expiry_date_str, "%Y%m%d").date()
+        expires_display = d.strftime("%d.%m.%Y")
+
+    return {
+        "status": "success",
+        "message": f"Lisans başarıyla aktive edildi! Geçerlilik: {expires_display}"
+    }
+
+
 
 # --- 2. Storage Pool Management ---
 
@@ -448,6 +568,11 @@ async def vm_console_websocket(websocket: WebSocket, name: str):
         pass
 
 # --- 10. Serve Frontend Static Assets ---
+from backend.routers_vcenter import router as vcenter_router
+from backend.routers_license import router as license_router
+app.include_router(vcenter_router)
+app.include_router(license_router)
+
 FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
 if os.path.exists(FRONTEND_DIR):
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="static")

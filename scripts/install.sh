@@ -33,6 +33,66 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+echo -e "${YELLOW}[0/7] Hard-Lock License Verification (HWID)...${NC}"
+if ! command -v dmidecode &> /dev/null; then
+    apt-get update -qq && apt-get install -y dmidecode -qq
+fi
+
+HWID=$(dmidecode -s system-uuid)
+if [ -z "$HWID" ]; then
+    echo -e "${RED}Error: Could not retrieve system UUID.${NC}"
+    exit 1
+fi
+echo -e "System HWID: ${CYAN}$HWID${NC}"
+
+SECRET_SIGNING_KEY="ankavm_private_signing_secret_9x2k7m_2026"
+SALT="ankavm_hwid_salt_2026_xyz"
+
+echo -e "\n${YELLOW}AnkaVM kurulumuna devam etmek için lisans anahtarınız gereklidir.${NC}"
+echo -e "Cihazınızın HWID değeri: ${CYAN}$HWID${NC}\n"
+read -p "Lisans Anahtarını Girin (ANKAVM-XXXX-XXXX-XXXX-XXXX-XXXXXXXX): " ENTERED_KEY
+
+# Anahtarın formatını kontrol et: ANKAVM-XXXX-XXXX-XXXX-XXXX-SIGSIG
+KEY_PARTS=$(echo "$ENTERED_KEY" | tr '-' '\n' | wc -l)
+if [ "$KEY_PARTS" -ne 6 ]; then
+    echo -e "${RED}Hata: Geçersiz lisans anahtarı formatı! Kurulum iptal edildi.${NC}"
+    exit 1
+fi
+
+# HMAC-SHA256 imza doğrulaması (Python ile)
+VALID=$(python3 - <<EOF
+import hmac, hashlib, sys
+parts = "$ENTERED_KEY".strip().split("-")
+if len(parts) != 6 or parts[0] != "ANKAVM":
+    print("invalid")
+    sys.exit()
+raw_token = "".join(parts[1:5])
+provided_sig = parts[5]
+expected_sig = hmac.new(
+    b"$SECRET_SIGNING_KEY",
+    raw_token.encode('utf-8'),
+    hashlib.sha256
+).hexdigest()[:8].upper()
+print("valid" if hmac.compare_digest(provided_sig, expected_sig) else "invalid")
+EOF
+)
+
+if [ "$VALID" != "valid" ]; then
+    echo -e "${RED}Hata: Geçersiz Lisans Anahtarı! Bu anahtar yetkili kaynak tarafından üretilmemiş.${NC}"
+    echo -e "${RED}Kurulum iptal edildi.${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ Lisans Anahtarı Doğrulandı!${NC}"
+mkdir -p /etc/ankavm
+# license.key formatı: base64(hwid|license_key|SALT)
+RAW_CONTENT="${HWID}|${ENTERED_KEY}|${SALT}"
+ENCODED_KEY=$(echo -n "$RAW_CONTENT" | base64 -w 0)
+echo "$ENCODED_KEY" > /etc/ankavm/license.key
+chmod 600 /etc/ankavm/license.key
+echo -e "${GREEN}✓ Lisans dosyası güvenle oluşturuldu: /etc/ankavm/license.key${NC}\n"
+
+
 # 1. Install virtualization and platform packages
 echo -e "${YELLOW}[1/7] Installing KVM, QEMU and System Dependencies...${NC}"
 apt-get update

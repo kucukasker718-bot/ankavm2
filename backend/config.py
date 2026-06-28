@@ -6,6 +6,7 @@ API_HOST = os.getenv("ANKAVM_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("ANKAVM_PORT", "8086"))
 API_KEY = os.getenv("ANKAVM_API_KEY", "ankavm-secure-dev-token-2026")
 LICENSE_KEY = os.getenv("ANKAVM_LICENSE_KEY", "ANKAVM-TRIAL-KEY-2026")
+DATABASE_URL = os.getenv("ANKAVM_DATABASE_URL", "postgresql://user:password@localhost/ankavmdb")
 
 # Libvirt Configurations
 LIBVIRT_IMAGES_DIR = os.getenv("ANKAVM_IMAGES_DIR", "/var/lib/libvirt/images")
