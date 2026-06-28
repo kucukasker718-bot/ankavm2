@@ -5392,9 +5392,11 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from .config import settings  # Assuming a config.py exists
 
-SQLALCHEMY_DATABASE_URL = getattr(settings, "DATABASE_URL", "postgresql://user:password@localhost/ankavmdb")
+SQLALCHEMY_DATABASE_URL = getattr(settings, "DATABASE_URL", "sqlite:///./ankavm.db")
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

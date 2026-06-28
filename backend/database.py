@@ -1,13 +1,13 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-# Burayı config'den doğrudan değişkeni alacak şekilde değiştirdik:
-from backend.config import DATABASE_URL 
+from .config import settings  # Assuming a config.py exists
 
-# getattr yerine doğrudan import edilen DATABASE_URL değişkenini kullanıyoruz
-SQLALCHEMY_DATABASE_URL = DATABASE_URL
+SQLALCHEMY_DATABASE_URL = getattr(settings, "DATABASE_URL", "sqlite:///./ankavm.db")
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
