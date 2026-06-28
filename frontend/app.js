@@ -106,6 +106,7 @@ document.addEventListener('alpine:init', () => {
         ],
         
         // Provisioning forms
+        wizardStep: 1, // 1: Image, 2: Resources, 3: IP/Network, 4: Confirm
         createForm: {
             name: '',
             cpu: 2,

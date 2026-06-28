@@ -987,14 +987,20 @@ class VMManager:
         # 1. Allocate IPAM IP address dynamically
         allocated_ip = self.ipam.allocate_ip(vm.name, "1")
         
-        # 2. Build Cloud-Init seed ISO containing Netplan and pass keys
-        seed_iso_path = CloudInitBuilder.create_seed_iso(
-            vm_name=vm.name,
-            root_password=vm.root_password or "AnkaVM-Secure-Root-2026",
-            ssh_key=vm.ssh_key,
-            ip_address=allocated_ip,
-            gateway="192.168.122.1"
-        )
+        is_windows = vm.os_template.lower().startswith("win") or "windows" in vm.os_template.lower()
+        if is_windows:
+            from backend.windows_autounattend import generate_windows_autounattend_iso
+            password = vm.root_password or "AnkaVM-Secure-Root-2026"
+            seed_iso_path = generate_windows_autounattend_iso(password)
+        else:
+            # 2. Build Cloud-Init seed ISO containing Netplan and pass keys for Linux
+            seed_iso_path = CloudInitBuilder.create_seed_iso(
+                vm_name=vm.name,
+                root_password=vm.root_password or "AnkaVM-Secure-Root-2026",
+                ssh_key=vm.ssh_key,
+                ip_address=allocated_ip,
+                gateway="192.168.122.1"
+            )
 
         target_pool = vm.disk_pool or "default"
         pools = self.list_storage_pools()
@@ -1052,6 +1058,7 @@ class VMManager:
             else:
                 self._run_secure_cmd(["/usr/bin/qemu-img", "create", "-f", "qcow2", disk_path, f"{vm.disk_gb}G"])
 
+        os_variant = "win2k22" if is_windows else "ubuntu22.04"
         cmd = [
             "/usr/bin/virt-install",
             "--name", vm.name,
@@ -1063,7 +1070,7 @@ class VMManager:
             "--graphics", "vnc,listen=0.0.0.0",
             "--noautoconsole",
             "--import",
-            "--os-variant", "ubuntu22.04"
+            "--os-variant", os_variant
         ]
         
         try:
@@ -3069,6 +3076,7 @@ document.addEventListener('alpine:init', () => {
         ],
         
         // Provisioning forms
+        wizardStep: 1, // 1: Image, 2: Resources, 3: IP/Network, 4: Confirm
         createForm: {
             name: '',
             cpu: 2,
@@ -4914,37 +4922,162 @@ class AnkaVM {
         </div>
     </div>
 
-    <!-- Create VM Modal -->
-    <div x-show="showCreateModal" class="fixed inset-0 bg-black/75 z-50 flex items-center justify-center p-4">
-        <div @click.away="showCreateModal = false" class="corp-card w-full max-w-md rounded-lg overflow-hidden p-5 space-y-4">
-            <h2 class="text-xs font-bold text-white">YENİ SANAL SUNUCU OLUŞTUR</h2>
-            <form @submit.prevent="provisionVm" class="space-y-3 font-mono text-xs">
-                <input type="text" x-model="createForm.name" required placeholder="Sunucu adı (Örn: web-prod-01)" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
-                <select x-model="createForm.os_template" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white">
-                    <option value="ubuntu-22.04">Ubuntu 22.04 LTS</option>
-                    <option value="debian-12">Debian 12 Bookworm</option>
-                </select>
-                <!-- Storage Pool target selection -->
-                <div class="space-y-1">
-                    <label class="text-[9px] text-slate-500 uppercase">YAYINLANACAK STORAGE POOL (DISK):</label>
-                    <select x-model="createForm.disk_pool" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white">
-                        <template x-for="pool in storagePools">
-                            <option :value="pool.name" x-text="`${pool.name} (${pool.pool_type})`"></option>
-                        </template>
-                    </select>
+    <!-- Create VM Wizard Modal -->
+    <div x-show="showCreateModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div @click.away="showCreateModal = false" class="corp-card w-full max-w-2xl rounded-2xl overflow-hidden p-0 flex flex-col shadow-2xl border border-slate-700/50">
+            <!-- Header -->
+            <div class="p-5 border-b border-slate-800 bg-slate-900 flex justify-between items-center">
+                <h2 class="text-sm font-bold text-white flex items-center space-x-2">
+                    <i class="fa-solid fa-wand-magic-sparkles text-brand-500"></i>
+                    <span>Yeni VDS Sihirbazı (Zero-Touch Provisioning)</span>
+                </h2>
+                <button @click="showCreateModal = false" class="text-slate-500 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            
+            <!-- Progress Bar -->
+            <div class="flex items-center p-5 bg-[#0f1523]">
+                <template x-for="step in [1, 2, 3, 4]">
+                    <div class="flex-1 flex items-center">
+                        <div class="w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs transition-colors duration-300"
+                             :class="wizardStep >= step ? 'bg-brand-500 text-white shadow-[0_0_10px_rgba(59,130,246,0.5)]' : 'bg-slate-800 text-slate-500'">
+                            <span x-text="step"></span>
+                        </div>
+                        <div x-show="step < 4" class="flex-1 h-1 mx-2 rounded transition-colors duration-300"
+                             :class="wizardStep > step ? 'bg-brand-500' : 'bg-slate-800'"></div>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Content -->
+            <div class="p-6 bg-[#111827] min-h-[350px]">
+                <!-- STEP 1: Image -->
+                <div x-show="wizardStep === 1" x-transition.opacity>
+                    <h3 class="text-white font-bold mb-4">Adım 1: İşletim Sistemi İmajı Seçin</h3>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <!-- Ubuntu -->
+                        <div @click="createForm.os_template = 'ubuntu-22.04'" class="p-4 rounded-xl border cursor-pointer text-center transition group"
+                             :class="createForm.os_template === 'ubuntu-22.04' ? 'bg-brand-500/20 border-brand-500' : 'bg-slate-900 border-slate-700 hover:border-slate-500'">
+                            <i class="fa-brands fa-ubuntu text-4xl mb-2" :class="createForm.os_template === 'ubuntu-22.04' ? 'text-brand-400' : 'text-slate-400'"></i>
+                            <div class="text-xs font-bold text-white">Ubuntu 22.04</div>
+                        </div>
+                        <!-- Debian -->
+                        <div @click="createForm.os_template = 'debian-12'" class="p-4 rounded-xl border cursor-pointer text-center transition group"
+                             :class="createForm.os_template === 'debian-12' ? 'bg-brand-500/20 border-brand-500' : 'bg-slate-900 border-slate-700 hover:border-slate-500'">
+                            <i class="fa-brands fa-linux text-4xl mb-2" :class="createForm.os_template === 'debian-12' ? 'text-brand-400' : 'text-slate-400'"></i>
+                            <div class="text-xs font-bold text-white">Debian 12</div>
+                        </div>
+                        <!-- Windows 2019 -->
+                        <div @click="createForm.os_template = 'win2019'" class="p-4 rounded-xl border cursor-pointer text-center transition group"
+                             :class="createForm.os_template === 'win2019' ? 'bg-blue-500/20 border-blue-500' : 'bg-slate-900 border-slate-700 hover:border-slate-500'">
+                            <i class="fa-brands fa-windows text-4xl mb-2" :class="createForm.os_template === 'win2019' ? 'text-blue-400' : 'text-slate-400'"></i>
+                            <div class="text-xs font-bold text-white">Win 2019 Server</div>
+                        </div>
+                        <!-- Windows 2022 -->
+                        <div @click="createForm.os_template = 'win2022'" class="p-4 rounded-xl border cursor-pointer text-center transition group"
+                             :class="createForm.os_template === 'win2022' ? 'bg-blue-500/20 border-blue-500' : 'bg-slate-900 border-slate-700 hover:border-slate-500'">
+                            <i class="fa-brands fa-windows text-4xl mb-2" :class="createForm.os_template === 'win2022' ? 'text-blue-400' : 'text-slate-400'"></i>
+                            <div class="text-xs font-bold text-white">Win 2022 Server</div>
+                        </div>
+                    </div>
                 </div>
-                <div class="grid grid-cols-3 gap-2">
-                    <select x-model.number="createForm.cpu" class="p-2 bg-slate-900 border border-slate-700 rounded text-white"><option value="1">1 CPU</option><option value="2">2 CPU</option><option value="4">4 CPU</option></select>
-                    <select x-model.number="createForm.ram_mb" class="p-2 bg-slate-900 border border-slate-700 rounded text-white"><option value="1024">1 GB</option><option value="2048">2 GB</option><option value="4096">4 GB</option></select>
-                    <select x-model.number="createForm.disk_gb" class="p-2 bg-slate-900 border border-slate-700 rounded text-white"><option value="20">20 GB</option><option value="40">40 GB</option><option value="80">80 GB</option></select>
+
+                <!-- STEP 2: Resources -->
+                <div x-show="wizardStep === 2" x-transition.opacity>
+                    <h3 class="text-white font-bold mb-4">Adım 2: Kaynakları Belirleyin</h3>
+                    <div class="space-y-6">
+                        <!-- Hostname -->
+                        <div>
+                            <label class="text-xs text-slate-400 block mb-1">Sunucu Adı (Hostname):</label>
+                            <input type="text" x-model="createForm.name" placeholder="Örn: srv-web-01" class="w-full p-3 bg-slate-900 border border-slate-700 rounded-lg text-white focus:outline-none focus:border-brand-500"/>
+                        </div>
+                        <div class="grid grid-cols-2 gap-6">
+                            <!-- CPU -->
+                            <div>
+                                <label class="text-xs text-slate-400 block mb-1">CPU Çekirdek Sayısı: <span class="text-brand-400 font-bold" x-text="createForm.cpu + ' Core'"></span></label>
+                                <input type="range" min="1" max="16" step="1" x-model.number="createForm.cpu" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-brand-500"/>
+                            </div>
+                            <!-- RAM -->
+                            <div>
+                                <label class="text-xs text-slate-400 block mb-1">RAM Miktarı: <span class="text-brand-400 font-bold" x-text="(createForm.ram_mb / 1024) + ' GB'"></span></label>
+                                <input type="range" min="1024" max="32768" step="1024" x-model.number="createForm.ram_mb" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-brand-500"/>
+                            </div>
+                        </div>
+                        <!-- Disk and Pool -->
+                        <div class="grid grid-cols-2 gap-6">
+                            <div>
+                                <label class="text-xs text-slate-400 block mb-1">Disk Boyutu: <span class="text-brand-400 font-bold" x-text="createForm.disk_gb + ' GB'"></span></label>
+                                <input type="range" min="10" max="500" step="10" x-model.number="createForm.disk_gb" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-brand-500"/>
+                            </div>
+                            <div>
+                                <label class="text-xs text-slate-400 block mb-1">Storage Pool:</label>
+                                <select x-model="createForm.disk_pool" class="w-full p-2 bg-slate-900 border border-slate-700 rounded-lg text-white focus:outline-none focus:border-brand-500">
+                                    <template x-for="pool in storagePools">
+                                        <option :value="pool.name" x-text="`${pool.name} (${pool.pool_type})`"></option>
+                                    </template>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <input type="text" x-model="createForm.root_password" required placeholder="Kök (Root) şifresi enjekte et" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"/>
-                <textarea x-model="createForm.ssh_key" placeholder="Authorized SSH Key (İsteğe bağlı)" class="w-full p-2 bg-slate-900 border border-slate-700 rounded text-[10px] text-white" rows="2"></textarea>
-                <div class="flex justify-end space-x-2 pt-2">
-                    <button type="button" @click="showCreateModal = false" class="px-3 py-1.5 text-slate-400">İptal</button>
-                    <button type="submit" class="btn-primary px-4 py-1.5 rounded">Oluştur</button>
+
+                <!-- STEP 3: Network & Security -->
+                <div x-show="wizardStep === 3" x-transition.opacity>
+                    <h3 class="text-white font-bold mb-4">Adım 3: Güvenlik & Ağ</h3>
+                    <div class="space-y-4">
+                        <div class="bg-brand-500/10 border border-brand-500/20 p-4 rounded-xl flex items-start space-x-3">
+                            <i class="fa-solid fa-circle-info text-brand-400 mt-0.5"></i>
+                            <div class="text-xs text-slate-300">IP adresi IPAM havuzundan (otomatik) atanacaktır. Zero-Touch Provisioning ile Windows şifreniz (Autounattend.xml) ve Linux konfigürasyonunuz (Cloud-Init) boot anında otomatik gömülecektir.</div>
+                        </div>
+                        <div>
+                            <label class="text-xs text-slate-400 block mb-1">Kök/Administrator Şifresi:</label>
+                            <input type="text" x-model="createForm.root_password" class="w-full p-3 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono focus:outline-none focus:border-brand-500"/>
+                        </div>
+                        <div>
+                            <label class="text-xs text-slate-400 block mb-1">SSH Key (Opsiyonel - Sadece Linux):</label>
+                            <textarea x-model="createForm.ssh_key" placeholder="ssh-rsa AAAAB3NzaC1..." class="w-full p-3 bg-slate-900 border border-slate-700 rounded-lg text-[10px] text-white focus:outline-none focus:border-brand-500 font-mono" rows="3"></textarea>
+                        </div>
+                    </div>
                 </div>
-            </form>
+
+                <!-- STEP 4: Confirm -->
+                <div x-show="wizardStep === 4" x-transition.opacity>
+                    <h3 class="text-white font-bold mb-4">Adım 4: Kurulum Onayı</h3>
+                    <div class="bg-slate-900 rounded-xl p-6 border border-slate-800 space-y-4 text-sm text-slate-300">
+                        <div class="flex justify-between border-b border-slate-800 pb-2">
+                            <span class="text-slate-500">Hostname:</span>
+                            <span class="text-white font-bold" x-text="createForm.name"></span>
+                        </div>
+                        <div class="flex justify-between border-b border-slate-800 pb-2">
+                            <span class="text-slate-500">İşletim Sistemi:</span>
+                            <span class="text-white font-bold" x-text="createForm.os_template"></span>
+                        </div>
+                        <div class="flex justify-between border-b border-slate-800 pb-2">
+                            <span class="text-slate-500">Kaynaklar:</span>
+                            <span class="text-white font-bold" x-text="`${createForm.cpu} Core / ${createForm.ram_mb} MB RAM / ${createForm.disk_gb} GB Disk`"></span>
+                        </div>
+                        <div class="flex justify-between border-b border-slate-800 pb-2">
+                            <span class="text-slate-500">Storage Pool:</span>
+                            <span class="text-white font-bold" x-text="createForm.disk_pool"></span>
+                        </div>
+                        <div class="flex justify-between pb-2">
+                            <span class="text-slate-500">IP Adresi:</span>
+                            <span class="text-brand-400 font-bold">Auto (IPAM)</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer Buttons -->
+            <div class="p-5 border-t border-slate-800 bg-[#0f1523] flex justify-between">
+                <button type="button" @click="if(wizardStep > 1) wizardStep--" class="px-5 py-2 text-slate-400 hover:text-white transition font-bold text-sm" :class="wizardStep === 1 ? 'invisible' : ''">Geri</button>
+                
+                <template x-if="wizardStep < 4">
+                    <button type="button" @click="wizardStep++" class="btn-primary px-6 py-2 rounded-lg font-bold text-sm">İleri</button>
+                </template>
+                <template x-if="wizardStep === 4">
+                    <button type="button" @click="provisionVm(); showCreateModal = false" class="bg-emerald-500 hover:bg-emerald-600 text-white shadow-[0_0_15px_rgba(16,185,129,0.3)] px-6 py-2 rounded-lg font-bold text-sm transition">Otomatik Kurulumu Başlat</button>
+                </template>
+            </div>
         </div>
     </div>
 
@@ -5860,6 +5993,89 @@ async def verify_license(req: LicenseVerifyRequest, db: Session = Depends(get_db
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="License has expired.")
         
     return {"status": "valid", "hwid": license_record.hwid}
+
+_ANKAVM_EOF_
+
+# Write backend/windows_autounattend.py
+cat << '_ANKAVM_EOF_' > /opt/ankavm/backend/windows_autounattend.py
+import os
+import subprocess
+import tempfile
+import uuid
+
+# Basit bir Autounattend.xml şablonu. (Administrator şifresini set eder)
+AUTOUNATTEND_XML_TEMPLATE = """<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+    <settings pass="oobeSystem">
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <UserAccounts>
+                <AdministratorPassword>
+                    <Value>{password}</Value>
+                    <PlainText>true</PlainText>
+                </AdministratorPassword>
+            </UserAccounts>
+            <AutoLogon>
+                <Password>
+                    <Value>{password}</Value>
+                    <PlainText>true</PlainText>
+                </Password>
+                <Enabled>true</Enabled>
+                <LogonCount>1</LogonCount>
+                <Username>Administrator</Username>
+            </AutoLogon>
+            <OOBE>
+                <HideEULAPage>true</HideEULAPage>
+                <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                <NetworkLocation>Work</NetworkLocation>
+                <ProtectYourPC>1</ProtectYourPC>
+                <SkipMachineOOBE>true</SkipMachineOOBE>
+                <SkipUserOOBE>true</SkipUserOOBE>
+            </OOBE>
+        </component>
+    </settings>
+</unattend>
+"""
+
+def generate_windows_autounattend_iso(password: str, output_dir: str = "/var/lib/libvirt/images") -> str:
+    """
+    Şifreyi gömerek Autounattend.xml oluşturur ve genisoimage ile bir sanal ISO'ya paketler.
+    Bu ISO daha sonra virt-install ile cdrom/floppy olarak Windows'a bağlanır.
+    """
+    # Benzersiz isim oluştur
+    uid = str(uuid.uuid4())[:8]
+    iso_name = f"unattend_{uid}.iso"
+    iso_path = os.path.join(output_dir, iso_name)
+    
+    # Geçici bir dizinde xml oluştur ve iso'ya bas
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xml_path = os.path.join(tmpdir, "Autounattend.xml")
+        xml_content = AUTOUNATTEND_XML_TEMPLATE.format(password=password)
+        
+        with open(xml_path, "w", encoding="utf-8") as f:
+            f.write(xml_content)
+            
+        # genisoimage kullanarak ISO oluştur
+        try:
+            subprocess.run(
+                ["genisoimage", "-J", "-r", "-V", "OEMDRV", "-o", iso_path, tmpdir],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            return iso_path
+        except FileNotFoundError:
+            # Fallback if genisoimage is missing, just use mkisofs if exists
+            try:
+                subprocess.run(
+                    ["mkisofs", "-J", "-r", "-V", "OEMDRV", "-o", iso_path, tmpdir],
+                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                return iso_path
+            except Exception as e:
+                print(f"[Windows AutoUnattend] ISO oluşturma hatası: {e}")
+                return ""
+        except Exception as e:
+            print(f"[Windows AutoUnattend] ISO oluşturma hatası: {e}")
+            return ""
+
 
 _ANKAVM_EOF_
 

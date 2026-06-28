@@ -344,14 +344,20 @@ class VMManager:
         # 1. Allocate IPAM IP address dynamically
         allocated_ip = self.ipam.allocate_ip(vm.name, "1")
         
-        # 2. Build Cloud-Init seed ISO containing Netplan and pass keys
-        seed_iso_path = CloudInitBuilder.create_seed_iso(
-            vm_name=vm.name,
-            root_password=vm.root_password or "AnkaVM-Secure-Root-2026",
-            ssh_key=vm.ssh_key,
-            ip_address=allocated_ip,
-            gateway="192.168.122.1"
-        )
+        is_windows = vm.os_template.lower().startswith("win") or "windows" in vm.os_template.lower()
+        if is_windows:
+            from backend.windows_autounattend import generate_windows_autounattend_iso
+            password = vm.root_password or "AnkaVM-Secure-Root-2026"
+            seed_iso_path = generate_windows_autounattend_iso(password)
+        else:
+            # 2. Build Cloud-Init seed ISO containing Netplan and pass keys for Linux
+            seed_iso_path = CloudInitBuilder.create_seed_iso(
+                vm_name=vm.name,
+                root_password=vm.root_password or "AnkaVM-Secure-Root-2026",
+                ssh_key=vm.ssh_key,
+                ip_address=allocated_ip,
+                gateway="192.168.122.1"
+            )
 
         target_pool = vm.disk_pool or "default"
         pools = self.list_storage_pools()
@@ -409,6 +415,7 @@ class VMManager:
             else:
                 self._run_secure_cmd(["/usr/bin/qemu-img", "create", "-f", "qcow2", disk_path, f"{vm.disk_gb}G"])
 
+        os_variant = "win2k22" if is_windows else "ubuntu22.04"
         cmd = [
             "/usr/bin/virt-install",
             "--name", vm.name,
@@ -420,7 +427,7 @@ class VMManager:
             "--graphics", "vnc,listen=0.0.0.0",
             "--noautoconsole",
             "--import",
-            "--os-variant", "ubuntu22.04"
+            "--os-variant", os_variant
         ]
         
         try:
