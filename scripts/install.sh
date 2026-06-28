@@ -167,6 +167,10 @@ websockets>=12.0
 pyvmomi>=8.0.1.0.2
 httpx>=0.27.0
 sqlalchemy>=2.0.0
+python-multipart>=0.0.9
+passlib>=1.7.4
+bcrypt>=4.1.2
+PyJWT>=2.8.0
 _ANKAVM_EOF_
 
 # Write backend/config.py

@@ -56,6 +56,14 @@ def add_req(match):
         req_body += "httpx>=0.27.0\n"
     if "sqlalchemy" not in req_body:
         req_body += "sqlalchemy>=2.0.0\n"
+    if "python-multipart" not in req_body:
+        req_body += "python-multipart>=0.0.9\n"
+    if "passlib" not in req_body:
+        req_body += "passlib>=1.7.4\n"
+    if "bcrypt" not in req_body:
+        req_body += "bcrypt>=4.1.2\n"
+    if "PyJWT" not in req_body:
+        req_body += "PyJWT>=2.8.0\n"
     return req_body + match.group(2)
 
 content = req_pattern.sub(add_req, content)
