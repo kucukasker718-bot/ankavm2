@@ -418,15 +418,16 @@ document.addEventListener('alpine:init', () => {
         async downloadCloudImage(name, url) {
             try {
                 this.showToast(`Bulut indirici başlatılıyor: ${name}`, 'info');
-                const response = await fetchHelper(`${API_BASE}/images/download`, {
+                const response = await fetch(`${API_BASE}/images/download`, {
                     method: 'POST',
                     headers: API_HEADERS,
                     body: JSON.stringify({ name: name, url: url })
                 });
-                if(response.error) throw new Error(response.error);
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || data.error || "İndirme başlatılamadı.");
                 
-                // response.filename should have the resulting ISO name. Update UI.
-                const filename = response.filename || (name.toLowerCase().replace(" ", "_") + ".iso");
+                // data.filename should have the resulting ISO name. Update UI.
+                const filename = data.filename || (name.toLowerCase().replace(" ", "_") + ".iso");
                 this.activeDownloads[filename] = { status: 'downloading', progress: 0 };
                 
                 // Find and link it to the cloudImage object
@@ -447,9 +448,10 @@ document.addEventListener('alpine:init', () => {
             
             this.pollDownloadsInterval = setInterval(async () => {
                 try {
-                    const response = await fetchHelper(`${API_BASE}/images/downloads`, { headers: API_HEADERS });
-                    if (response && !response.error) {
-                        this.activeDownloads = response;
+                    const response = await fetch(`${API_BASE}/images/downloads`, { headers: API_HEADERS });
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.activeDownloads = data;
                         
                         // Check if all are completed or failed to stop polling
                         let allDone = true;
