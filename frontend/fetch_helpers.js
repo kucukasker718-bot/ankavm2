@@ -5,27 +5,6 @@ const API_HEADERS = {
     'X-API-Key': 'ankavm-secure-dev-token-2026'
 };
 
-async function fetchHelper(url, options = {}) {
-    const response = await fetch(url, options);
-    const contentType = response.headers.get('content-type') || '';
-    let data = null;
-
-    if (contentType.includes('application/json')) {
-        data = await response.json();
-    } else {
-        data = await response.text();
-    }
-
-    if (!response.ok) {
-        const errorMessage = typeof data === 'object'
-            ? (data.detail || data.message || data.error || 'İstek başarısız oldu.')
-            : (data || 'İstek başarısız oldu.');
-        throw new Error(errorMessage);
-    }
-
-    return data;
-}
-
 /**
  * Renders the color-coded Proxmox-style disk progress bar based on percentage capacity.
  * Red indicator starts above 90% load.

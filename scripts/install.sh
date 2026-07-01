@@ -3043,6 +3043,8 @@ document.addEventListener('alpine:init', () => {
         showCreatePoolModal: false,
         showConsoleModal: false,
         showWiseCpSimulateModal: false,
+        showModuleModal: false,
+        selectedModule: null,
         licenseKeyInput: '',
         
         // VCenter State
@@ -3056,10 +3058,13 @@ document.addEventListener('alpine:init', () => {
         
         // Modules & Cloud Images State
         cloudImages: [
-            { name: 'Windows Server 2012 R2', url: 'http://iso.ankavm.net/win2012r2.iso', icon: 'fa-windows' },
-            { name: 'Windows Server 2016', url: 'http://iso.ankavm.net/win2016.iso', icon: 'fa-windows' },
-            { name: 'Windows Server 2019', url: 'http://iso.ankavm.net/win2019.iso', icon: 'fa-windows' },
-            { name: 'Ubuntu 22.04 LTS Server', url: 'http://iso.ankavm.net/ubuntu2204.iso', icon: 'fa-linux' }
+            { name: 'Windows Server 2012 R2', url: 'https://software-download.microsoft.com/download/pr/9600.17050.WINBLUE_REFRESH.140317-1640_X64FRE_SERVER_EVAL_EN-US-IR3_SSS_X64FREE_EN-US_DV9.ISO', icon: 'fa-windows' },
+            { name: 'Windows Server 2016', url: 'https://software-download.microsoft.com/download/pr/Windows_Server_2016_Datacenter_EVAL_en-us_14393_refresh.ISO', icon: 'fa-windows' },
+            { name: 'Windows Server 2019', url: 'https://software-download.microsoft.com/download/pr/17763.737.190906-1724.rs5_release_svc_refresh_SERVER_EVAL_x64FRE_en-us_1.iso', icon: 'fa-windows' },
+            { name: 'Windows Server 2022', url: 'https://software-download.microsoft.com/download/sg/20348.169.210806-2348.fe_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso', icon: 'fa-windows' },
+            { name: 'Ubuntu 22.04 LTS Server', url: 'https://releases.ubuntu.com/22.04/ubuntu-22.04.4-live-server-amd64.iso', icon: 'fa-linux' },
+            { name: 'Debian 12 Bookworm', url: 'https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-12.5.0-amd64-netinst.iso', icon: 'fa-linux' },
+            { name: 'Alpine Linux (Hızlı Test)', url: 'https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-standard-3.20.1-x86_64.iso', icon: 'fa-linux' }
         ],
         
         systemModules: [
@@ -3216,6 +3221,11 @@ document.addEventListener('alpine:init', () => {
                     this.initVmPerformanceChart();
                 });
             }
+        },
+
+        openModuleSettings(mod) {
+            this.selectedModule = mod;
+            this.showModuleModal = true;
         },
 
         // --- Fetch actions ---
@@ -4768,7 +4778,7 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
                                                 <td class="p-4 text-right">
                                                     <button @click="downloadCloudImage(cImg.name, cImg.url)" class="btn-primary px-3 py-1.5 rounded text-xs" :disabled="activeDownloads[cImg.filename] && activeDownloads[cImg.filename].status === 'downloading'">
                                                         <i class="fa-solid fa-download mr-1"></i>
-                                                        <span x-text="(activeDownloads[cImg.filename] && activeDownloads[cImg.filename].status === 'downloading') ? 'İndiriliyor...' : 'İndir ve Kur'"></span>
+                                                        <span x-text="(activeDownloads[cImg.filename] && activeDownloads[cImg.filename].status === 'downloading') ? 'İndirme Başlatıldı...' : 'İndir ve Kur'"></span>
                                                     </button>
                                                 </td>
                                             </tr>
@@ -4859,7 +4869,7 @@ cat << '_ANKAVM_EOF_' > /opt/ankavm/frontend/index.html
                                         
                                         <!-- Buttons -->
                                         <template x-if="mod.active && licenseStatus.is_licensed">
-                                            <button class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700 transition">Ayarları Yönet</button>
+                                            <button @click="openModuleSettings(mod)" class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700 transition">Ayarları Yönet</button>
                                         </template>
                                         <template x-if="!mod.active || !licenseStatus.is_licensed">
                                             <a href="https://discord.gg/ankaturkey" target="_blank" class="block w-full text-center py-2.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-bold rounded-lg transition shadow-lg shadow-brand-500/20">
@@ -5269,6 +5279,77 @@ class AnkaVM {
         </template>
     </div>
 
+    <!-- Professional Module Settings Modal -->
+    <div x-show="showModuleModal" class="fixed inset-0 bg-[#070a13]/95 backdrop-blur-md z-[100] flex items-center justify-center p-4" x-transition>
+        <div @click.away="showModuleModal = false" class="bg-[#111827] border border-brand-500/30 rounded-2xl p-0 max-w-2xl w-full shadow-2xl flex flex-col overflow-hidden relative">
+            
+            <!-- Modal Background Effects -->
+            <div class="absolute inset-0 bg-gradient-to-br from-brand-500/10 to-transparent pointer-events-none"></div>
+
+            <!-- Modal Header -->
+            <div class="px-6 py-5 border-b border-slate-800 flex justify-between items-center relative z-10 bg-[#0f1523]/80">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 rounded-xl bg-brand-500/20 border border-brand-500/30 flex items-center justify-center text-brand-500 text-lg shadow-[0_0_15px_rgba(59,130,246,0.2)]">
+                        <i class="fa-solid" :class="selectedModule ? selectedModule.icon : 'fa-puzzle-piece'"></i>
+                    </div>
+                    <div>
+                        <h2 class="text-base font-bold text-white tracking-wide" x-text="selectedModule ? selectedModule.name : 'Modül Ayarları'"></h2>
+                        <div class="flex items-center space-x-2 mt-0.5">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                            <span class="text-[9px] text-slate-400 font-mono uppercase tracking-wider">Modül Aktif ve Çalışıyor</span>
+                        </div>
+                    </div>
+                </div>
+                <button @click="showModuleModal = false" class="text-slate-500 hover:text-white transition bg-slate-900/50 hover:bg-slate-800 w-8 h-8 rounded-lg flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            
+            <!-- Modal Body -->
+            <div class="p-6 relative z-10 space-y-6">
+                <!-- Warning / Info Box -->
+                <div class="bg-brand-500/10 border border-brand-500/20 p-4 rounded-xl flex items-start space-x-3">
+                    <i class="fa-solid fa-circle-info text-brand-400 mt-0.5 text-lg"></i>
+                    <div>
+                        <h4 class="text-xs font-bold text-white mb-1">Gelişmiş Yapılandırma Alanı</h4>
+                        <p class="text-[11px] text-slate-300 leading-relaxed" x-text="selectedModule ? selectedModule.desc : ''"></p>
+                    </div>
+                </div>
+
+                <!-- Form Configuration Mockup -->
+                <form @submit.prevent="showToast('Modül ayarları başarıyla kaydedildi!', 'success'); showModuleModal = false" class="space-y-4">
+                    <div class="grid grid-cols-2 gap-5">
+                        <div class="space-y-1.5">
+                            <label class="text-[10px] uppercase font-bold text-slate-400 font-mono tracking-wider">Durum</label>
+                            <select class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 focus:border-brand-500 focus:outline-none rounded-xl text-white font-mono text-[11px] transition-all">
+                                <option value="enabled">Aktif (Kullanımda)</option>
+                                <option value="disabled">Devre Dışı</option>
+                            </select>
+                        </div>
+                        <div class="space-y-1.5">
+                            <label class="text-[10px] uppercase font-bold text-slate-400 font-mono tracking-wider">Yetkilendirme Seviyesi</label>
+                            <select class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 focus:border-brand-500 focus:outline-none rounded-xl text-white font-mono text-[11px] transition-all">
+                                <option value="admin">Sadece Yöneticiler</option>
+                                <option value="all">Tüm Kullanıcılar</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="space-y-1.5">
+                        <label class="text-[10px] uppercase font-bold text-slate-400 font-mono tracking-wider">Özel Yapılandırma Parametreleri (JSON)</label>
+                        <textarea rows="4" class="w-full px-4 py-3 bg-slate-950 border border-slate-700 focus:border-brand-500 focus:outline-none rounded-xl text-slate-300 font-mono text-[11px] transition-all leading-relaxed" placeholder='{ "setting": "value" }'></textarea>
+                    </div>
+
+                    <!-- Modal Footer -->
+                    <div class="pt-4 border-t border-slate-800 flex justify-end space-x-3">
+                        <button type="button" @click="showModuleModal = false" class="px-5 py-2.5 rounded-xl text-xs font-bold text-slate-400 hover:text-white hover:bg-slate-800 transition-all">İptal</button>
+                        <button type="submit" class="px-6 py-2.5 rounded-xl text-xs font-bold text-white bg-brand-500 hover:bg-brand-600 shadow-[0_0_15px_rgba(59,130,246,0.3)] transition-all flex items-center space-x-2">
+                            <i class="fa-solid fa-floppy-disk"></i>
+                            <span>Değişiklikleri Kaydet</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
 

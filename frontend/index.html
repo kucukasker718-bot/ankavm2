@@ -681,7 +681,7 @@
                                                 <td class="p-4 text-right">
                                                     <button @click="downloadCloudImage(cImg.name, cImg.url)" class="btn-primary px-3 py-1.5 rounded text-xs" :disabled="activeDownloads[cImg.filename] && activeDownloads[cImg.filename].status === 'downloading'">
                                                         <i class="fa-solid fa-download mr-1"></i>
-                                                        <span x-text="(activeDownloads[cImg.filename] && activeDownloads[cImg.filename].status === 'downloading') ? 'İndiriliyor...' : 'İndir ve Kur'"></span>
+                                                        <span x-text="(activeDownloads[cImg.filename] && activeDownloads[cImg.filename].status === 'downloading') ? 'İndirme Başlatıldı...' : 'İndir ve Kur'"></span>
                                                     </button>
                                                 </td>
                                             </tr>
@@ -782,6 +782,57 @@
                                     </div>
                                 </div>
                             </template>
+                        </div>
+                    </div>
+
+                    <!-- MODULE SETTINGS TAB -->
+                    <div x-show="activeTab === 'module_settings'" x-cloak class="space-y-6">
+                        <div class="flex flex-col md:flex-row justify-between items-center bg-[#111827] p-5 rounded-2xl border border-slate-800 shadow-xl gap-4">
+                            <div class="flex items-center space-x-4 w-full md:w-auto">
+                                <div class="w-12 h-12 rounded-xl bg-brand-500/20 border border-brand-500/30 flex items-center justify-center text-brand-500 text-xl shadow-lg shrink-0">
+                                    <i class="fa-solid" :class="selectedModule ? selectedModule.icon : ''"></i>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-bold text-white" x-text="selectedModule ? selectedModule.name : ''"></h3>
+                                    <p class="text-xs text-slate-400" x-text="selectedModule ? selectedModule.desc : ''"></p>
+                                </div>
+                            </div>
+                            <button @click="setTab('modules')" class="px-4 py-2.5 w-full md:w-auto bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700 transition flex items-center justify-center space-x-2 whitespace-nowrap">
+                                <i class="fa-solid fa-arrow-left"></i>
+                                <span>Geri Dön</span>
+                            </button>
+                        </div>
+
+                        <div class="corp-card rounded-2xl p-6 space-y-6">
+                            <h4 class="text-sm font-bold text-white uppercase tracking-wider flex items-center space-x-2 border-b border-slate-800 pb-3">
+                                <i class="fa-solid fa-sliders text-brand-500"></i>
+                                <span>Modül Yapılandırması</span>
+                            </h4>
+                            
+                            <div class="space-y-4">
+                                <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-5 flex items-start space-x-4">
+                                    <div class="mt-1"><i class="fa-solid fa-circle-info text-brand-400 text-lg"></i></div>
+                                    <div>
+                                        <h5 class="text-white font-bold text-sm mb-1">Durum Seçenekleri</h5>
+                                        <p class="text-xs text-slate-400 mb-3">Bu modülün sistem geneli aktifliğini veya parametrelerini buradan ayarlayabilirsiniz.</p>
+                                        <label class="flex items-center space-x-3 cursor-pointer">
+                                            <input type="checkbox" checked class="w-4 h-4 rounded border-slate-700 text-brand-500 focus:ring-brand-500 bg-slate-900" />
+                                            <span class="text-sm font-bold text-white">Modülü Aktif Et</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                
+                                <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-5">
+                                    <label class="text-xs text-slate-400 block mb-2 font-bold uppercase tracking-wider">Ekstra Parametreler (JSON)</label>
+                                    <textarea class="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs text-slate-300 font-mono focus:border-brand-500 focus:ring-1 focus:ring-brand-500 outline-none transition" rows="5" placeholder='{\n  "param1": "value",\n  "param2": true\n}'></textarea>
+                                </div>
+                                
+                                <div class="flex justify-end pt-2">
+                                    <button class="btn-primary px-6 py-2.5 rounded-lg text-sm font-bold shadow-lg shadow-brand-500/20" @click="showToast('Ayarlar başarıyla kaydedildi!', 'success')">
+                                        Ayarları Kaydet
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -1126,48 +1177,6 @@ class AnkaVM {
         </div>
     </div>
 
-    <!-- Module Settings Modal -->
-    <div x-show="showModuleSettingsModal" x-cloak class="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
-        <div class="bg-[#111827] border border-slate-800 rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden" @click.away="closeModuleSettings()">
-            <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
-                <div>
-                    <h3 class="text-sm font-bold text-white" x-text="selectedModule?.name || 'Modül Ayarları'"></h3>
-                    <p class="text-[11px] text-slate-400" x-text="selectedModule?.desc || 'Bu modülün ayarlarını yapılandırın.'"></p>
-                </div>
-                <button @click="closeModuleSettings()" class="text-slate-400 hover:text-white">
-                    <i class="fa-solid fa-xmark"></i>
-                </button>
-            </div>
-            <div class="p-5 space-y-4 text-sm">
-                <div class="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
-                    <div class="flex items-center justify-between mb-3">
-                        <span class="text-slate-300 font-semibold">Modül Durumu</span>
-                        <span class="px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 text-[10px] font-bold">Aktif</span>
-                    </div>
-                    <p class="text-[12px] text-slate-400">Bu bölüm, seçilen modül için temel yapılandırma ve yönetim ayarlarını sunar.</p>
-                </div>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <label class="rounded-xl border border-slate-800 bg-slate-950/70 p-3 flex items-center justify-between">
-                        <span class="text-slate-300 text-sm">Otomatik başlat</span>
-                        <input type="checkbox" checked class="accent-brand-500" />
-                    </label>
-                    <label class="rounded-xl border border-slate-800 bg-slate-950/70 p-3 flex items-center justify-between">
-                        <span class="text-slate-300 text-sm">Bildirimleri göster</span>
-                        <input type="checkbox" checked class="accent-brand-500" />
-                    </label>
-                </div>
-                <div class="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
-                    <label class="text-[10px] uppercase tracking-wider text-slate-500">Not / Açıklama</label>
-                    <textarea rows="3" class="w-full mt-2 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500" placeholder="Bu modül için ek not girin..."></textarea>
-                </div>
-            </div>
-            <div class="px-5 py-4 border-t border-slate-800 flex justify-end space-x-2">
-                <button @click="closeModuleSettings()" class="px-3 py-2 text-sm rounded-lg text-slate-400 hover:text-white">İptal</button>
-                <button @click="saveModuleSettings()" class="px-3 py-2 text-sm rounded-lg bg-brand-500 hover:bg-brand-600 text-white font-semibold">Kaydet</button>
-            </div>
-        </div>
-    </div>
-
     <!-- Terminal & VNC Modal -->
     <div x-show="showConsoleModal" class="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4">
         <div class="corp-card w-full max-w-3xl rounded-xl overflow-hidden shadow-2xl border border-slate-800" @click.away="closeConsole()">
@@ -1224,5 +1233,76 @@ class AnkaVM {
         </template>
     </div>
 
+    <!-- Professional Module Settings Modal -->
+    <div x-show="showModuleModal" class="fixed inset-0 bg-[#070a13]/95 backdrop-blur-md z-[100] flex items-center justify-center p-4" x-transition>
+        <div @click.away="showModuleModal = false" class="bg-[#111827] border border-brand-500/30 rounded-2xl p-0 max-w-2xl w-full shadow-2xl flex flex-col overflow-hidden relative">
+            
+            <!-- Modal Background Effects -->
+            <div class="absolute inset-0 bg-gradient-to-br from-brand-500/10 to-transparent pointer-events-none"></div>
+
+            <!-- Modal Header -->
+            <div class="px-6 py-5 border-b border-slate-800 flex justify-between items-center relative z-10 bg-[#0f1523]/80">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 rounded-xl bg-brand-500/20 border border-brand-500/30 flex items-center justify-center text-brand-500 text-lg shadow-[0_0_15px_rgba(59,130,246,0.2)]">
+                        <i class="fa-solid" :class="selectedModule ? selectedModule.icon : 'fa-puzzle-piece'"></i>
+                    </div>
+                    <div>
+                        <h2 class="text-base font-bold text-white tracking-wide" x-text="selectedModule ? selectedModule.name : 'Modül Ayarları'"></h2>
+                        <div class="flex items-center space-x-2 mt-0.5">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                            <span class="text-[9px] text-slate-400 font-mono uppercase tracking-wider">Modül Aktif ve Çalışıyor</span>
+                        </div>
+                    </div>
+                </div>
+                <button @click="showModuleModal = false" class="text-slate-500 hover:text-white transition bg-slate-900/50 hover:bg-slate-800 w-8 h-8 rounded-lg flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            
+            <!-- Modal Body -->
+            <div class="p-6 relative z-10 space-y-6">
+                <!-- Warning / Info Box -->
+                <div class="bg-brand-500/10 border border-brand-500/20 p-4 rounded-xl flex items-start space-x-3">
+                    <i class="fa-solid fa-circle-info text-brand-400 mt-0.5 text-lg"></i>
+                    <div>
+                        <h4 class="text-xs font-bold text-white mb-1">Gelişmiş Yapılandırma Alanı</h4>
+                        <p class="text-[11px] text-slate-300 leading-relaxed" x-text="selectedModule ? selectedModule.desc : ''"></p>
+                    </div>
+                </div>
+
+                <!-- Form Configuration Mockup -->
+                <form @submit.prevent="showToast('Modül ayarları başarıyla kaydedildi!', 'success'); showModuleModal = false" class="space-y-4">
+                    <div class="grid grid-cols-2 gap-5">
+                        <div class="space-y-1.5">
+                            <label class="text-[10px] uppercase font-bold text-slate-400 font-mono tracking-wider">Durum</label>
+                            <select class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 focus:border-brand-500 focus:outline-none rounded-xl text-white font-mono text-[11px] transition-all">
+                                <option value="enabled">Aktif (Kullanımda)</option>
+                                <option value="disabled">Devre Dışı</option>
+                            </select>
+                        </div>
+                        <div class="space-y-1.5">
+                            <label class="text-[10px] uppercase font-bold text-slate-400 font-mono tracking-wider">Yetkilendirme Seviyesi</label>
+                            <select class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 focus:border-brand-500 focus:outline-none rounded-xl text-white font-mono text-[11px] transition-all">
+                                <option value="admin">Sadece Yöneticiler</option>
+                                <option value="all">Tüm Kullanıcılar</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="space-y-1.5">
+                        <label class="text-[10px] uppercase font-bold text-slate-400 font-mono tracking-wider">Özel Yapılandırma Parametreleri (JSON)</label>
+                        <textarea rows="4" class="w-full px-4 py-3 bg-slate-950 border border-slate-700 focus:border-brand-500 focus:outline-none rounded-xl text-slate-300 font-mono text-[11px] transition-all leading-relaxed" placeholder='{ "setting": "value" }'></textarea>
+                    </div>
+
+                    <!-- Modal Footer -->
+                    <div class="pt-4 border-t border-slate-800 flex justify-end space-x-3">
+                        <button type="button" @click="showModuleModal = false" class="px-5 py-2.5 rounded-xl text-xs font-bold text-slate-400 hover:text-white hover:bg-slate-800 transition-all">İptal</button>
+                        <button type="submit" class="px-6 py-2.5 rounded-xl text-xs font-bold text-white bg-brand-500 hover:bg-brand-600 shadow-[0_0_15px_rgba(59,130,246,0.3)] transition-all flex items-center space-x-2">
+                            <i class="fa-solid fa-floppy-disk"></i>
+                            <span>Değişiklikleri Kaydet</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
