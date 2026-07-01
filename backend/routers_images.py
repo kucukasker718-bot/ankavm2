@@ -9,9 +9,10 @@ from typing import List
 
 router = APIRouter(prefix="/api/images", tags=["images"])
 
-# In a real environment, this should be /var/lib/libvirt/images
-# For dev/windows, we'll use a local folder
-UPLOAD_DIR = os.path.join(os.getcwd(), "storage_images")
+from backend.config import LIBVIRT_IMAGES_DIR
+
+# Use the configured images directory (Desktop/AnkaVM_ISOs on Windows)
+UPLOAD_DIR = LIBVIRT_IMAGES_DIR
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 class ImageResponse(BaseModel):
@@ -53,6 +54,7 @@ class ImageDownloadRequest(BaseModel):
 def download_image_task(url: str, filename: str, image_name: str):
     import os
     from backend.config import LIBVIRT_IMAGES_DIR
+    os.makedirs(LIBVIRT_IMAGES_DIR, exist_ok=True)
     target_path = os.path.join(LIBVIRT_IMAGES_DIR, filename)
     
     DOWNLOAD_PROGRESS[filename] = {"status": "downloading", "progress": 0}
@@ -95,7 +97,7 @@ def download_image_task(url: str, filename: str, image_name: str):
 
 @router.post("/download")
 async def download_image(req: ImageDownloadRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    # Basic slugify
+    # Slugify: lowercase and replace spaces with underscores (matches frontend)
     filename = req.name.lower().replace(" ", "_") + ".iso"
     
     # Send to background task so it doesn't block FastAPI

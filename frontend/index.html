@@ -699,13 +699,33 @@
                                 <span>Özel İmaj Yükle (Local/VCenter)</span>
                             </h3>
                             <div class="flex items-center justify-center w-full">
-                                <label for="dropzone-file-2" class="flex flex-col items-center justify-center w-full h-40 border-2 border-slate-700 border-dashed rounded-xl cursor-pointer bg-slate-950/50 hover:bg-slate-800/50 transition">
-                                    <div class="flex flex-col items-center justify-center pt-5 pb-6">
-                                        <i class="fa-solid fa-upload text-3xl text-slate-500 mb-3"></i>
-                                        <p class="mb-2 text-sm text-slate-400"><span class="font-semibold text-brand-500">Tıklayın</span> veya sürükleyip bırakın</p>
-                                        <p class="text-xs text-slate-500">ISO veya VM Template (.ova, .vmdk)</p>
+                                <label for="dropzone-file-2" class="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed rounded-xl cursor-pointer transition"
+                                       :class="uploadIsActive ? 'border-brand-500 bg-brand-500/5' : 'border-slate-700 bg-slate-950/50 hover:bg-slate-800/50'">
+                                    <div class="flex flex-col items-center justify-center pt-5 pb-6 w-full px-6">
+                                        <template x-if="!uploadIsActive">
+                                            <div class="flex flex-col items-center">
+                                                <i class="fa-solid fa-upload text-3xl text-slate-500 mb-3"></i>
+                                                <p class="mb-2 text-sm text-slate-400"><span class="font-semibold text-brand-500">Tıklayın</span> veya sürükleyip bırakın</p>
+                                                <p class="text-xs text-slate-500">ISO veya VM Template (.ova, .vmdk)</p>
+                                            </div>
+                                        </template>
+                                        <template x-if="uploadIsActive">
+                                            <div class="w-full">
+                                                <div class="flex items-center justify-between mb-2">
+                                                    <span class="text-xs font-bold text-white flex items-center space-x-2">
+                                                        <i class="fa-solid fa-spinner animate-spin text-brand-500"></i>
+                                                        <span>Yükleniyor...</span>
+                                                    </span>
+                                                    <span class="text-xs font-mono font-bold text-brand-400" x-text="uploadProgress + '%'"></span>
+                                                </div>
+                                                <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                                                    <div class="bg-brand-500 h-2 transition-all duration-200 rounded-full" :style="'width: ' + uploadProgress + '%'"></div>
+                                                </div>
+                                                <p class="text-[10px] text-slate-500 mt-2 text-center">Lütfen sayfayı kapatmayın...</p>
+                                            </div>
+                                        </template>
                                     </div>
-                                    <input id="dropzone-file-2" type="file" class="hidden" @change="uploadImage" accept=".iso,.img,.qcow2,.ova,.vmdk" />
+                                    <input id="dropzone-file-2" type="file" class="hidden" @change="uploadImage" accept=".iso,.img,.qcow2,.ova,.vmdk" :disabled="uploadIsActive" />
                                 </label>
                             </div>
                         </div>

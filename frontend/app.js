@@ -10,7 +10,7 @@ document.addEventListener('alpine:init', () => {
     Alpine.data('vmPanel', () => ({
         // Tab system
         activeTab: 'dashboard', // dashboard, vms, networks, ipam, storage, settings, license
-        
+
         // Data States
         vms: [],
         networks: [],
@@ -25,7 +25,7 @@ document.addEventListener('alpine:init', () => {
         consoleTab: 'vnc', // 'vnc' or 'serial'
         vncConnected: false,
         vncBootState: 0, // 0: offline, 1: booting bios, 2: kernel load, 3: fully loaded shell
-        
+
         licenseStatus: {
             is_licensed: false,
             owner_name: 'Sistem Yükleniyor...',
@@ -48,7 +48,7 @@ document.addEventListener('alpine:init', () => {
             vms_running: 0,
             vms_total: 0
         },
-        
+
         // VDS Inspector Details
         selectedVmName: null,
         selectedVmTelemetry: null,
@@ -58,7 +58,7 @@ document.addEventListener('alpine:init', () => {
             ram: [],
             timestamps: []
         },
-        
+
         // Filters & Sorting & Searches
         searchQuery: '',
         statusFilter: 'all',
@@ -66,7 +66,7 @@ document.addEventListener('alpine:init', () => {
         sortDesc: false,
         loading: true,
         toasts: [],
-        
+
         // Modal Overlays
         showCreateModal: false,
         showCreateNetModal: false,
@@ -76,7 +76,7 @@ document.addEventListener('alpine:init', () => {
         showModuleModal: false,
         selectedModule: null,
         licenseKeyInput: '',
-        
+
         // VCenter State
         vcenterConfig: {
             host: '',
@@ -85,7 +85,7 @@ document.addEventListener('alpine:init', () => {
             is_active: false
         },
         vcenterDiscovery: [],
-        
+
         // Modules & Cloud Images State
         cloudImages: [
             { name: 'Ubuntu 24.04 LTS Server', url: 'https://releases.ubuntu.com/24.04/ubuntu-24.04-live-server-amd64.iso', icon: 'fa-linux' },
@@ -99,7 +99,7 @@ document.addEventListener('alpine:init', () => {
             { name: 'Windows Server 2016 (Eval)', url: 'https://software-download.microsoft.com/download/pr/Windows_Server_2016_Datacenter_EVAL_en-us_14393_refresh.ISO', icon: 'fa-windows' },
             { name: 'Windows Server 2012 R2 (Eval)', url: 'https://software-download.microsoft.com/download/pr/9600.17050.WINBLUE_REFRESH.140317-1640_X64FRE_SERVER_EVAL_EN-US-IR3_SSS_X64FREE_EN-US_DV9.ISO', icon: 'fa-windows' }
         ],
-        
+
         systemModules: [
             { id: 'webconsole', name: 'Gelişmiş Web Console', desc: 'VCenter MKS protokolünü WebSockets üzerinden güvenli aktarır.', icon: 'fa-terminal', active: true },
             { id: 'autopass', name: 'Otomatik Şifre Yönetimi (WiseCP)', desc: 'VM kurulumu sonrası OS şifrelerini otomatik sıfırlar ve müşteriye gösterir.', icon: 'fa-key', active: true },
@@ -112,7 +112,7 @@ document.addEventListener('alpine:init', () => {
             { id: 'docker', name: 'Docker & Container Yönetimi', desc: 'LXC ve Docker container oluşturma motoru.', icon: 'fa-docker', active: true },
             { id: 'vgpu', name: 'GPU Passthrough & vGPU', desc: 'Sanal makinelere fiziksel ekran kartı ataması yapar.', icon: 'fa-microchip', active: true }
         ],
-        
+
         // Provisioning forms
         wizardStep: 1, // 1: Image, 2: Resources, 3: IP/Network, 4: Confirm
         createForm: {
@@ -154,34 +154,34 @@ document.addEventListener('alpine:init', () => {
             os_template: 'ubuntu-22.04',
             root_password: 'WiseCPPassWord123!'
         },
- 
+
         // Charts
         hostCpuChart: null,
         hostRamChart: null,
         hostDiskChart: null,
         vmPerformanceChart: null,
- 
+
         // Websockets console
         wsConsole: null,
         termInstance: null,
         vncSimulationTimer: null,
         vncCanvasContent: '',
- 
+
         async init() {
             console.log("Initializing Corporate SaaS Dashboard Controller with Watchdog & Licensing...");
-            
+
             toggleSkeletonLoaders(true);
-            
+
             // İlk olarak lisans durumunu kontrol et
             await this.fetchLicenseStatus();
-            
+
             // Lisans yoksa veri çekmeyi ve interval'ları başlatma
             if (!this.licenseStatus.is_licensed) {
                 this.loading = false;
                 toggleSkeletonLoaders(false);
                 return;
             }
-            
+
             // Lisanslıysa tüm sistemi başlat
             await this.bootSystem();
         },
@@ -199,26 +199,26 @@ document.addEventListener('alpine:init', () => {
                 this.fetchWiseCpOrders(),
                 this.fetchVcenterConfig()
             ]);
-            
+
             // If vcenter is active, fetch discovery
             if (this.vcenterConfig.is_active) {
                 this.fetchVcenterDiscovery();
             }
-            
+
             // Fetch images after vcenter is loaded
             await this.fetchImages();
-            
+
             this.loading = false;
             toggleSkeletonLoaders(false);
-            
+
             // Set up charts on next tick
             this.$nextTick(() => {
                 this.initHostCharts();
                 this.renderApexStorageCharts();
             });
- 
+
             // Set up timers for data sync
-            if(!this._intervalsStarted) {
+            if (!this._intervalsStarted) {
                 setInterval(() => this.fetchHostStats(), 4000);
                 setInterval(() => this.fetchVms(), 5000);
                 setInterval(() => this.fetchActiveVmTelemetry(), 3000);
@@ -240,7 +240,7 @@ document.addEventListener('alpine:init', () => {
 
         setTab(tabName) {
             this.activeTab = tabName;
-            
+
             if (tabName === 'dashboard') {
                 this.$nextTick(() => {
                     this.initHostCharts();
@@ -248,7 +248,7 @@ document.addEventListener('alpine:init', () => {
                     this.renderApexStorageCharts();
                 });
             }
-            
+
             if (tabName === 'vms' && this.selectedVmName) {
                 this.$nextTick(() => {
                     this.initVmPerformanceChart();
@@ -416,43 +416,46 @@ document.addEventListener('alpine:init', () => {
         activeDownloads: {}, // Maps filename -> {status, progress}
 
         async downloadCloudImage(name, url) {
+            // Compute filename exactly like backend does
+            const filename = name.toLowerCase().replace(/ /g, '_') + '.iso';
+            
+            // Immediately mark as downloading in UI so button disables
+            const imgObj = this.cloudImages.find(c => c.name === name);
+            if (imgObj) imgObj.filename = filename;
+            this.activeDownloads[filename] = { status: 'downloading', progress: 0 };
+            this.showToast(`İndirme başlatılıyor: ${name}`, 'info');
+
             try {
-                this.showToast(`Bulut indirici başlatılıyor: ${name}`, 'info');
                 const response = await fetch(`${API_BASE}/images/download`, {
                     method: 'POST',
                     headers: API_HEADERS,
                     body: JSON.stringify({ name: name, url: url })
                 });
                 const data = await response.json();
-                if (!response.ok) throw new Error(data.detail || data.error || "İndirme başlatılamadı.");
-                
-                // data.filename should have the resulting ISO name. Update UI.
-                const filename = data.filename || (name.toLowerCase().replace(" ", "_") + ".iso");
-                this.activeDownloads[filename] = { status: 'downloading', progress: 0 };
-                
-                // Find and link it to the cloudImage object
-                const imgObj = this.cloudImages.find(c => c.name === name);
-                if (imgObj) imgObj.filename = filename;
-                
-                this.showToast(`${name} başarıyla indirme kuyruğuna eklendi!`, 'success');
-                this.pollDownloads(); // start polling
-            } catch(e) {
+                if (!response.ok) throw new Error(data.detail || data.error || 'İndirme başlatılamadı.');
+
+                this.showToast(`${name} indirme kuyruğuna eklendi!`, 'success');
+                this.pollDownloads();
+            } catch (e) {
+                // Revert on failure
+                delete this.activeDownloads[filename];
+                if (imgObj) delete imgObj.filename;
                 this.showToast(`İndirme başlatılamadı: ${e.message}`, 'error');
             }
         },
-        
+
         pollDownloadsInterval: null,
-        
+
         async pollDownloads() {
             if (this.pollDownloadsInterval) return; // already polling
-            
+
             this.pollDownloadsInterval = setInterval(async () => {
                 try {
                     const response = await fetch(`${API_BASE}/images/downloads`, { headers: API_HEADERS });
                     if (response.ok) {
                         const data = await response.json();
                         this.activeDownloads = data;
-                        
+
                         // Check if all are completed or failed to stop polling
                         let allDone = true;
                         for (let file in this.activeDownloads) {
@@ -461,45 +464,77 @@ document.addEventListener('alpine:init', () => {
                                 break;
                             }
                         }
-                        
+
                         if (allDone && Object.keys(this.activeDownloads).length > 0) {
                             clearInterval(this.pollDownloadsInterval);
                             this.pollDownloadsInterval = null;
                             this.fetchImages(); // Refresh normal image list to show the newly downloaded ones
                         }
                     }
-                } catch(e) {
+                } catch (e) {
                     console.error("Polling downloads failed:", e);
                 }
             }, 2000);
         },
 
+        uploadProgress: 0,
+        uploadIsActive: false,
+
         async uploadImage(event) {
             const file = event.target.files[0];
             if (!file) return;
 
-            this.showToast("İmaj yükleniyor, lütfen bekleyin...", "info");
-            const formData = new FormData();
-            formData.append("file", file);
-
-            try {
-                const res = await fetch(`${API_BASE}/images/upload`, {
-                    method: 'POST',
-                    headers: { 'X-API-Key': API_HEADERS['X-API-Key'] },
-                    body: formData
-                });
-                const data = await res.json();
-                if (res.ok) {
-                    this.showToast(data.message, "success");
-                    await this.fetchImages();
-                } else {
-                    throw new Error(data.detail);
-                }
-            } catch (err) {
-                this.showToast(err.message, "error");
-            } finally {
-                event.target.value = ''; // Reset input
+            // Validate extension
+            const allowed = ['.iso', '.img', '.qcow2', '.ova', '.vmdk'];
+            const ext = '.' + file.name.split('.').pop().toLowerCase();
+            if (!allowed.includes(ext)) {
+                this.showToast('Desteklenmeyen dosya formatı. ISO, IMG, QCOW2, OVA veya VMDK yükleyin.', 'error');
+                event.target.value = '';
+                return;
             }
+
+            this.uploadIsActive = true;
+            this.uploadProgress = 0;
+            this.showToast(`"${file.name}" yükleniyor...`, 'info');
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const xhr = new XMLHttpRequest();
+
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    this.uploadProgress = Math.round((e.loaded / e.total) * 100);
+                }
+            });
+
+            xhr.addEventListener('load', async () => {
+                this.uploadIsActive = false;
+                this.uploadProgress = 0;
+                event.target.value = '';
+                try {
+                    const data = JSON.parse(xhr.responseText);
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        this.showToast(data.message || 'İmaj başarıyla yüklendi!', 'success');
+                        await this.fetchImages();
+                    } else {
+                        this.showToast(data.detail || 'Yükleme başarısız oldu.', 'error');
+                    }
+                } catch {
+                    this.showToast('Sunucu yanıtı okunamadı.', 'error');
+                }
+            });
+
+            xhr.addEventListener('error', () => {
+                this.uploadIsActive = false;
+                this.uploadProgress = 0;
+                event.target.value = '';
+                this.showToast('Ağ hatası: Yükleme tamamlanamadı.', 'error');
+            });
+
+            xhr.open('POST', `${API_BASE}/images/upload`);
+            xhr.setRequestHeader('X-API-Key', API_HEADERS['X-API-Key']);
+            xhr.send(formData);
         },
 
         async fetchIpamData() {
@@ -508,7 +543,7 @@ document.addEventListener('alpine:init', () => {
                     fetch(`${API_BASE}/ipam/pools`, { headers: API_HEADERS }),
                     fetch(`${API_BASE}/ipam/leases`, { headers: API_HEADERS })
                 ]);
-                
+
                 if (poolsRes.ok) this.ipPools = await poolsRes.json();
                 if (leasesRes.ok) this.ipLeases = await leasesRes.json();
             } catch (err) {
@@ -529,7 +564,7 @@ document.addEventListener('alpine:init', () => {
 
         async fetchActiveVmTelemetry() {
             if (!this.selectedVmName || this.activeTab !== 'vms') return;
-            
+
             const activeVm = this.vms.find(v => v.name === this.selectedVmName);
             if (!activeVm || activeVm.status !== 'running') {
                 this.selectedVmTelemetry = null;
@@ -541,7 +576,7 @@ document.addEventListener('alpine:init', () => {
                 if (res.ok) {
                     const tel = await res.json();
                     this.selectedVmTelemetry = tel;
-                    
+
                     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                     this.telemetryHistory.timestamps.push(now);
                     this.telemetryHistory.cpu.push(tel.cpu_usage_percent);
@@ -593,7 +628,7 @@ document.addEventListener('alpine:init', () => {
             this.selectedVmName = name;
             this.selectedVmSnapshots = [];
             this.telemetryHistory = { cpu: [], ram: [], timestamps: [] };
-            
+
             this.$nextTick(() => {
                 this.initVmPerformanceChart();
                 this.fetchActiveVmTelemetry();
@@ -612,7 +647,7 @@ document.addEventListener('alpine:init', () => {
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || "İşlem başarısız.");
-                
+
                 this.showToast(data.message, 'success');
                 await Promise.all([this.fetchVms(), this.fetchLogs()]);
             } catch (err) {
@@ -631,7 +666,7 @@ document.addEventListener('alpine:init', () => {
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || "Kurulum başarısız.");
-                
+
                 this.showToast(`VDS '${data.name}' başarıyla oluşturuldu ve başlatıldı.`, 'success');
                 this.createForm = { name: '', cpu: 2, ram_mb: 2048, disk_gb: 40, disk_pool: 'default-dir', os_template: 'ubuntu-22.04', root_password: 'AnkaVM-Secure-Root-2026', ssh_key: '' };
                 await Promise.all([this.fetchVms(), this.fetchLogs(), this.fetchIpamData()]);
@@ -652,7 +687,7 @@ document.addEventListener('alpine:init', () => {
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || "Silme işlemi başarısız.");
-                
+
                 this.showToast(data.message, 'success');
                 if (this.selectedVmName === name) this.selectedVmName = null;
                 await Promise.all([this.fetchVms(), this.fetchLogs(), this.fetchIpamData(), this.fetchIpLogs()]);
@@ -674,7 +709,7 @@ document.addEventListener('alpine:init', () => {
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || "Sanal ağ kurulumu başarısız.");
-                
+
                 this.showToast(`Ağ '${this.createNetForm.name}' başarıyla oluşturuldu.`, 'success');
                 this.createNetForm = { name: '', bridge: '', ip: '192.168.100.1', dhcp_start: '192.168.100.2', dhcp_end: '192.168.100.100' };
                 await Promise.all([this.fetchNetworks(), this.fetchLogs(), this.fetchIpamData()]);
@@ -686,7 +721,7 @@ document.addEventListener('alpine:init', () => {
         async provisionIpPool() {
             this.showToast(`IP Havuzu ekleniyor: ${this.createPoolForm.name}`, 'info');
             this.showCreatePoolModal = false;
-            
+
             const mockNet = {
                 name: this.createPoolForm.name,
                 bridge: 'virbr' + (this.networks.length + 1),
@@ -694,7 +729,7 @@ document.addEventListener('alpine:init', () => {
                 dhcp_start: this.createPoolForm.dns_primary,
                 dhcp_end: this.createPoolForm.dns_secondary
             };
-            
+
             try {
                 const res = await fetch(`${API_BASE}/networks`, {
                     method: 'POST',
@@ -718,7 +753,7 @@ document.addEventListener('alpine:init', () => {
                 const allocated = this.storagePools.map(p => parseFloat(p.allocated_gb));
                 const free = this.storagePools.map(p => parseFloat(p.free_gb));
                 const categories = this.storagePools.map(p => p.name);
-                
+
                 this.$nextTick(() => {
                     initStorageHealthChart('storagePoolApexChart', allocated, free, categories);
                 });
@@ -726,7 +761,7 @@ document.addEventListener('alpine:init', () => {
         },
 
         // --- Live Chart.js Visualizations ---
-        
+
         initHostCharts() {
             const cpuEl = document.getElementById('cpuChartCanvas');
             const ramEl = document.getElementById('ramChartCanvas');
@@ -768,7 +803,7 @@ document.addEventListener('alpine:init', () => {
 
         updateHostCharts() {
             if (!this.hostCpuChart || this.activeTab !== 'dashboard') return;
-            
+
             this.hostCpuChart.data.datasets[0].data = [this.hostStats.cpu_usage, 100 - this.hostStats.cpu_usage];
             this.hostCpuChart.update('none');
 
@@ -1050,12 +1085,12 @@ document.addEventListener('alpine:init', () => {
         async simulateWiseCpOrder() {
             this.showToast("WiseCP Sipariş talebi gönderiliyor...", "info");
             this.showWiseCpSimulateModal = false;
-            
+
             // Auto generate an order_id if empty
             if (!this.wiseCpSimulateForm.order_id) {
                 this.wiseCpSimulateForm.order_id = 'ws-order-' + Math.floor(1000 + Math.random() * 9000);
             }
-            
+
             try {
                 const res = await fetch(`${API_BASE}/wisecp/deploy`, {
                     method: 'POST',
@@ -1081,7 +1116,7 @@ document.addEventListener('alpine:init', () => {
             this.vncBootState = 1;
             this.vncConnected = false;
             this.vncCanvasContent = "Bağlanıyor...";
-            
+
             setTimeout(() => {
                 this.vncConnected = true;
                 this.vncBootState = 1;
@@ -1110,11 +1145,11 @@ document.addEventListener('alpine:init', () => {
         },
 
         // --- Toast Management ---
-        
+
         showToast(message, type = 'info') {
             const id = Date.now() + Math.random();
             this.toasts.push({ id, message, type });
-            
+
             setTimeout(() => {
                 this.toasts = this.toasts.filter(t => t.id !== id);
             }, 4000);
